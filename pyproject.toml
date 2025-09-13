@@ -1,0 +1,27 @@
+[build-system]
+requires = [
+    "hatchling",
+]
+build-backend = "hatchling.build"
+
+[project]
+name = "HyperArgs"
+version = "0.0.0"
+authors = [
+  { name="Yintao Tai", email="tai.yintao@gmail.com" },
+]
+description = "HyperArgs is a typed configuration library for Python. Define settings as type-annotated classes; HyperArgs parses command-line flags, configuration files, and environment variables into a single, type-checked object, with an optional browser-based editor."
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Development Status :: 4 - Beta",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/TYTTYTTYT/HyperArgs"
+"Bug Tracker" = "https://github.com/TYTTYTTYT/HyperArgs/issues"
+"repository" = "https://github.com/TYTTYTTYT/HyperArgs.git"
