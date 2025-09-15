@@ -67,7 +67,7 @@ class IntArg(Arg[int]):
             if value.lower().strip() in ('none', 'null'):
                 value = None
         if value is None:
-            if self._allow_none:
+            if not self._allow_none:
                 raise ValueError("Value cannot be None")
             else:
                 self._value = value
@@ -87,7 +87,8 @@ class IntArg(Arg[int]):
         return value
 
     def __repr__(self) -> str:
-        return f"IntArg(value={self._value}, min_value={self._min_value}, max_value={self._max_value}, allow_none={self._allow_none})"
+        return (f"IntArg(value={self._value}, min_value={self._min_value}, max_value={self._max_value}, "
+                f"allow_none={self._allow_none})")
 
 
 class FloatArg(Arg[float]):
@@ -128,7 +129,7 @@ class FloatArg(Arg[float]):
             if value.lower().strip() in ('none', 'null'):
                 value = None
         if value is None:
-            if self._allow_none:
+            if not self._allow_none:
                 raise ValueError("Value cannot be None")
             else:
                 self._value = value
@@ -148,7 +149,8 @@ class FloatArg(Arg[float]):
         return value
 
     def __repr__(self) -> str:
-        return f"FloatArg(value={self._value}, min_value={self._min_value}, max_value={self._max_value}, allow_none={self._allow_none})"
+        return (f"FloatArg(value={self._value}, min_value={self._min_value}, max_value={self._max_value}, "
+                f"allow_none={self._allow_none})")
 
 
 class StrArg(Arg[str]):
@@ -173,7 +175,7 @@ class StrArg(Arg[str]):
             if value.lower().strip() in ('none', 'null'):
                 value = None
         if value is None:
-            if self._allow_none:
+            if not self._allow_none:
                 raise ValueError("Value cannot be None")
             else:
                 self._value = value
@@ -209,7 +211,7 @@ class BoolArg(Arg[bool]):
             if value.lower().strip() in ('none', 'null'):
                 value = None
         if value is None:
-            if self._allow_none:
+            if not self._allow_none:
                 raise ValueError("Value cannot be None")
             else:
                 self._value = value
@@ -263,7 +265,7 @@ class OptionArg(Arg[str]):
             if value.lower().strip() in ('none', 'null'):
                 value = None
         if value is None:
-            if self._allow_none:
+            if not self._allow_none:
                 raise ValueError("Value cannot be None")
             else:
                 self._value = value
