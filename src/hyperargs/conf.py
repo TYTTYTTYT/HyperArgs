@@ -3,6 +3,7 @@ from collections import defaultdict
 import copy
 import json
 import logging
+import sys
 
 import networkx as nx
 import tomli
@@ -171,6 +172,66 @@ class Conf:
         data = yaml.safe_load(yaml_str)
         assert isinstance(data, dict), "YAML string must represent a dictionary"
         return cls.from_dict(data, strict=strict)
+
+    @classmethod
+    def parse_command_line(cls: Type[C], strict: bool = False) -> C:
+        """Parse configuration file according to command line arguments."""
+
+        if len(sys.argv) <= 2:
+            if len(sys.argv) == 1:
+                raise ValueError("No command line arguments provided. Use --help for usage information.")
+            if sys.argv[1] in ('--help', '-h'):
+                print("Usage:")
+                print("  --parse_json <json_string>    Parse configuration from JSON string")
+                print("  --parse_toml <toml_string>    Parse configuration from TOML string")
+                print("  --parse_yaml <yaml_string>    Parse configuration from YAML string")
+                print("  --config_path <file_path>     Parse configuration from file (supports .json, .toml, .yaml, .yml)")
+                sys.exit(0)
+            else:
+                raise ValueError("No command line arguments provided. Use --help for usage information.")
+
+        assert len(sys.argv) >= 3, "Insufficient command line arguments, please refer to --help for usage information"
+        config_type = sys.argv[1]
+
+        if config_type == '--parse_json':
+            assert len(sys.argv) == 3, "JSON string must be provided as a command line argument"
+            return cls.from_json(sys.argv[2], strict=strict)
+        elif config_type == '--parse_toml':
+            assert len(sys.argv) == 3, "TOML string must be provided as a command line argument"
+            return cls.from_toml(sys.argv[2], strict=strict)
+        elif config_type == '--parse_yaml':
+            assert len(sys.argv) == 3, "YAML string must be provided as a command line argument"
+            return cls.from_yaml(sys.argv[2], strict=strict)
+        elif config_type == '--config_path':
+            assert len(sys.argv) == 3, "Configuration file path must be provided as a command line argument"
+            file_path = sys.argv[2]
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            if file_path.lower().endswith('.json'):
+                return cls.from_json(content, strict=strict)
+            elif file_path.lower().endswith('.toml'):
+                return cls.from_toml(content, strict=strict)
+            elif file_path.lower().endswith(('.yaml', '.yml')):
+                return cls.from_yaml(content, strict=strict)
+            else:
+                raise ValueError("Unsupported configuration file format. Supported formats: .json, .toml, .yaml, .yml")
+        else:
+            raise ValueError("Unsupported command line argument. Use --parse_json, --parse_toml, --parse_yaml, or --config_path")
+
+    def save_to_file(self, file_path: str) -> None:
+        """Save the configuration to a file in the appropriate format based on the file extension."""
+        content = ""
+        if file_path.lower().endswith('.json'):
+            content = self.to_json(indent=2)
+        elif file_path.lower().endswith('.toml'):
+            content = self.to_toml()
+        elif file_path.lower().endswith(('.yaml', '.yml')):
+            content = self.to_yaml()
+        else:
+            raise ValueError("Unsupported file format. Supported formats: .json, .toml, .yaml, .yml")
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.to_dict()})"
