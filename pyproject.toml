@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "HyperArgs"
-version = "0.0.1"
+version = "0.0.2"
 authors = [
   { name="Yintao Tai", email="tai.yintao@gmail.com" },
 ]
@@ -34,7 +34,8 @@ dependencies = [
   "networkx>=3.0",
   "tomli>=2.0.0",
   "tomli_w>=1.0.0",
-  "PyYAML>=6.0"
+  "PyYAML>=6.0",
+  "typing_extensions>=4.0.0",
 ]
 
 [project.urls]
