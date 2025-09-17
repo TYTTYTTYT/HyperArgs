@@ -4,8 +4,21 @@
 This module defines various argument types for hyperparameter management.
 '''
 
-from typing import Any, Optional, TypeVar, Set, Generic
+from typing import Any, Optional, TypeVar, List, Generic, Union, Dict
+from typing_extensions import Self
 import os
+from copy import deepcopy
+
+# JSON can be: object, array, string, number, boolean, or null
+JSON = Union[
+    str,
+    int,
+    float,
+    bool,
+    None,
+    Dict[str, "JSON"],
+    List["JSON"],
+]
 
 T = TypeVar("T")
 
@@ -19,7 +32,7 @@ class Arg(Generic[T]):
     def value(self) -> Optional[T]:
         raise NotImplementedError(f'Please implement value method for {self.__class__.__name__}')
 
-    def parse(self, value: Any) -> Optional[T]:
+    def parse(self, value: Any) -> Self:
         raise NotImplementedError(f'Please implement parse method for {self.__class__.__name__}')
 
     def __repr__(self) -> str:
@@ -62,7 +75,7 @@ class IntArg(Arg[int]):
     def value(self) -> Optional[int]:
         return self._value
 
-    def parse(self, value: Any) -> Optional[int]:
+    def parse(self, value: Any) -> Self:
         if isinstance(value, str):
             if value.lower().strip() in ('none', 'null'):
                 value = None
@@ -70,8 +83,9 @@ class IntArg(Arg[int]):
             if not self._allow_none:
                 raise ValueError("Value cannot be None")
             else:
-                self._value = value
-                return self._value
+                result = deepcopy(self)
+                result._value = value
+                return result
 
         try:
             value = int(value)
@@ -83,8 +97,9 @@ class IntArg(Arg[int]):
         if self._max_value is not None and value > self._max_value:
             raise ValueError(f"Value {value} is greater than maximum {self._max_value}")
 
-        self._value = value
-        return value
+        result = deepcopy(self)
+        result._value = value
+        return result
 
     def __repr__(self) -> str:
         return (f"IntArg(value={self._value}, min_value={self._min_value}, max_value={self._max_value}, "
@@ -124,7 +139,7 @@ class FloatArg(Arg[float]):
     def value(self) -> Optional[float]:
         return self._value
 
-    def parse(self, value: Any) -> Optional[float]:
+    def parse(self, value: Any) -> Self:
         if isinstance(value, str):
             if value.lower().strip() in ('none', 'null'):
                 value = None
@@ -132,8 +147,9 @@ class FloatArg(Arg[float]):
             if not self._allow_none:
                 raise ValueError("Value cannot be None")
             else:
-                self._value = value
-                return self._value
+                result = deepcopy(self)
+                result._value = value
+                return result
 
         try:
             value = float(value)
@@ -145,8 +161,9 @@ class FloatArg(Arg[float]):
         if self._max_value is not None and value > self._max_value:
             raise ValueError(f"Value {value} is greater than maximum {self._max_value}")
 
-        self._value = value
-        return value
+        result = deepcopy(self)
+        result._value = value
+        return result
 
     def __repr__(self) -> str:
         return (f"FloatArg(value={self._value}, min_value={self._min_value}, max_value={self._max_value}, "
@@ -170,7 +187,7 @@ class StrArg(Arg[str]):
     def value(self) -> Optional[str]:
         return self._value
 
-    def parse(self, value: Any) -> Optional[str]:
+    def parse(self, value: Any) -> Self:
         if isinstance(value, str):
             if value.lower().strip() in ('none', 'null'):
                 value = None
@@ -178,15 +195,18 @@ class StrArg(Arg[str]):
             if not self._allow_none:
                 raise ValueError("Value cannot be None")
             else:
-                self._value = value
-                return self._value
+                result = deepcopy(self)
+                result._value = value
+                return result
 
         try:
             value = str(value)
         except ValueError:
             raise ValueError(f"Cannot convert {value} to str")
-        self._value = value
-        return value
+
+        result = deepcopy(self)
+        result._value = value
+        return result
 
 
 class BoolArg(Arg[bool]):
@@ -206,7 +226,7 @@ class BoolArg(Arg[bool]):
     def value(self) -> Optional[bool]:
         return self._value
 
-    def parse(self, value: Any) -> Optional[bool]:
+    def parse(self, value: Any) -> Self:
         if isinstance(value, str):
             if value.lower().strip() in ('none', 'null'):
                 value = None
@@ -214,8 +234,9 @@ class BoolArg(Arg[bool]):
             if not self._allow_none:
                 raise ValueError("Value cannot be None")
             else:
-                self._value = value
-                return self._value
+                result = deepcopy(self)
+                result._value = value
+                return result
 
         if isinstance(value, str):
             if value.lower() in ('true', '1', 'yes'):
@@ -229,8 +250,10 @@ class BoolArg(Arg[bool]):
             value = bool(value)
         except ValueError:
             raise ValueError(f"Cannot convert {value} to bool")
-        self._value = value
-        return value
+
+        result = deepcopy(self)
+        result._value = value
+        return result
 
 
 class OptionArg(Arg[str]):
@@ -238,7 +261,7 @@ class OptionArg(Arg[str]):
     def __init__(
         self, 
         default: Optional[str], 
-        options: Set[str], 
+        options: List[str], 
         allow_none: bool = False, 
         env_bind: Optional[str] = None
     ):
@@ -260,7 +283,7 @@ class OptionArg(Arg[str]):
     def value(self) -> Optional[str]:
         return self._value
 
-    def parse(self, value: Any) -> Optional[str]:
+    def parse(self, value: Any) -> Self:
         if isinstance(value, str):
             if value.lower().strip() in ('none', 'null'):
                 value = None
@@ -268,8 +291,9 @@ class OptionArg(Arg[str]):
             if not self._allow_none:
                 raise ValueError("Value cannot be None")
             else:
-                self._value = value
-                return self._value
+                result = deepcopy(self)
+                result._value = value
+                return result
 
         try:
             value = str(value)
@@ -279,8 +303,9 @@ class OptionArg(Arg[str]):
         if value not in self._options:
             raise ValueError(f"Value {value} is not in options {self._options}")
 
-        self._value = value
-        return value
+        result = deepcopy(self)
+        result._value = value
+        return result
 
     def __repr__(self) -> str:
         return f"OptionArg(value={self._value}, options={self._options}, allow_none={self._allow_none})"
