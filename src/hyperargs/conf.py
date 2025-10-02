@@ -1,16 +1,25 @@
-from typing import Any, Dict, Union, Optional, Type, Callable, TypeVar, ParamSpec, Set, List
+from typing import Any, Dict, Union, Optional, Type, Callable, TypeVar, ParamSpec, Set, List, overload
 from collections import defaultdict
 import copy
 import json
 import logging
 import sys
+import __main__
+import tempfile
+import subprocess
+import os
+import time
+import psutil
 
 import networkx as nx
 import tomli
 import tomli_w
 import yaml
+import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
 
 from .args import Arg, JSON
+from .utils import is_running_in_streamlit, get_conf_dict_from_session
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +85,10 @@ class Conf:
             values[name] = _to_json_dict(value)
 
         return values
+
+    def field_names(self) -> Set[str]:
+        """Get the names of all fields in the configuration."""
+        return set(self.to_dict().keys())
 
     def to_json(self, indent: Optional[Union[str, int]] = None) -> str:
         """Convert the configuration to a JSON string."""
@@ -215,6 +228,72 @@ class Conf:
                 return cls.from_yaml(content, strict=strict)
             else:
                 raise ValueError("Unsupported configuration file format. Supported formats: .json, .toml, .yaml, .yml")
+        elif config_type == '--from_web':
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                tmp_path = temp_file.name
+
+            cmd = f'streamlit run {__main__.__file__} --web_mode {tmp_path}'
+            web_proc = subprocess.Popen(cmd, shell=True)
+            web_proc.wait()
+
+            with open(tmp_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            try:
+                instance = cls.from_json(content, strict=strict)
+            except Exception as e:
+                raise Exception(f"Config from web failed! Error: {e}")
+            return instance
+
+        elif config_type == '--web_mode':
+            assert is_running_in_streamlit(), ("Web mode can only be used by the program it self. You should never "
+                                               "run it manually.")
+
+            assert len(sys.argv) == 3, "Web mode file path must be provided as a command line argument"
+            file_path = sys.argv[2]
+
+            instance = cls()
+            previous_dict = get_conf_dict_from_session()
+            instance.from_dict(previous_dict, strict=strict)
+
+            instance.build_widgets()
+
+            st.markdown("## Parameters in Json")
+            st.code(
+                body=instance.to_json(indent=2),
+                language='json',
+                line_numbers=True,
+            )
+            st.markdown("## Parameters in Toml")
+            st.code(
+                body=instance.to_toml(),
+                language='toml',
+                line_numbers=True,
+            )
+            st.markdown("## Parameters in Yaml")
+            st.code(
+                body=instance.to_yaml(),
+                language='yaml',
+                line_numbers=True,
+            )
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(instance.to_json(indent=2))
+
+            exit_app = st.button("Run ", help="Click to run the program with the current parameters.")
+            if exit_app:
+                @st.dialog(title='Info')
+                def end_program():
+                    st.write("Program will run with the current parameters.")
+                    st.write("The configuration server is closing in 5 seconds. You can now close this tab.")
+                end_program()
+
+                time.sleep(5)
+                pid = os.getpid()
+                p = psutil.Process(pid)
+                p.terminate()
+
+            st.stop()
         else:
             raise ValueError("Unsupported command line argument. Use --parse_json, --parse_toml, --parse_yaml, or --config_path")
 
@@ -235,6 +314,14 @@ class Conf:
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.to_dict()})"
+
+    def build_widgets(self, prefix: Optional[str] = None, container: Optional[DeltaGenerator] = None) -> None:
+        """Build the Streamlit widgets for the configuration."""
+        for key, value in self.__dict__.items():
+            if isinstance(value, Arg):
+                value.build_widgets(key)
+            elif isinstance(value, Conf):
+                value.build_widgets()
 
 def _to_json_dict(value: Union[Arg, Conf, list]) -> JSON:
     if isinstance(value, Arg):
