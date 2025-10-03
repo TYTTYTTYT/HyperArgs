@@ -2,7 +2,7 @@ from typing import Dict, Any, List
 
 import streamlit as st
 
-from .args import JSON
+from .args import JSON, ST_TAG
 
 def is_running_in_streamlit() -> bool:
     """Check if the code is running in a Streamlit app.
@@ -42,7 +42,7 @@ def get_conf_dict_from_session() -> Dict[str, JSON]:
     for key, value in st.session_state.items():
         if not isinstance(key, str):
             continue
-        if key.startswith("$$这是filed✅$$"):
+        if key.startswith(ST_TAG):
             key_seq = key.split('.')[1:]
             update_dict(key_seq, value, conf_dict)
 

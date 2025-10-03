@@ -9,6 +9,8 @@ from typing_extensions import Self
 import os
 from copy import deepcopy
 
+from streamlit.delta_generator import DeltaGenerator
+
 # JSON can be: object, array, string, number, boolean, or null
 JSON = Union[
     str,
@@ -19,6 +21,7 @@ JSON = Union[
     Dict[str, "JSON"],
     List["JSON"],
 ]
+ST_TAG = "$$这是filed✅$$"
 
 T = TypeVar("T")
 
@@ -40,6 +43,9 @@ class Arg(Generic[T]):
 
     def __str__(self) -> str:
         return str(self._value)
+
+    def build_widget(self, key: str, container: DeltaGenerator) -> None:
+        raise NotImplementedError(f'Please implement build_widget method for {self.__class__.__name__}')
 
 
 class IntArg(Arg[int]):
@@ -105,6 +111,17 @@ class IntArg(Arg[int]):
         return (f"IntArg(value={self._value}, min_value={self._min_value}, max_value={self._max_value}, "
                 f"allow_none={self._allow_none})")
 
+    def build_widget(self, key: str, container: DeltaGenerator) -> None:
+        label = key.split('.')[-1]
+        container.number_input(
+            label=label,
+            value=self._value,
+            min_value=self._min_value,
+            max_value=self._max_value,
+            key=f'{ST_TAG}.{key}',
+            step=1,
+        )
+
 
 class FloatArg(Arg[float]):
     ''' An argument that takes a float value. '''
@@ -169,6 +186,16 @@ class FloatArg(Arg[float]):
         return (f"FloatArg(value={self._value}, min_value={self._min_value}, max_value={self._max_value}, "
                 f"allow_none={self._allow_none})")
 
+    def build_widget(self, key: str, container: DeltaGenerator) -> None:
+        label = key.split('.')[-1]
+        container.number_input(
+            label=label,
+            value=self._value,
+            min_value=self._min_value,
+            max_value=self._max_value,
+            key=f'{ST_TAG}.{key}',
+        )
+
 
 class StrArg(Arg[str]):
     ''' An argument that takes a string value. '''
@@ -208,15 +235,20 @@ class StrArg(Arg[str]):
         result._value = value
         return result
 
+    def build_widget(self, key: str, container: DeltaGenerator) -> None:
+        label = key.split('.')[-1]
+        container.text_input(
+            label=label,
+            value=self._value,
+            key=f'{ST_TAG}.{key}',
+        )
+
 
 class BoolArg(Arg[bool]):
     ''' An argument that can take boolean values. '''
-    def __init__(self, default: Optional[bool], allow_none: bool = False, env_bind: Optional[str] = None):
+    def __init__(self, default: bool, env_bind: Optional[str] = None):
         self._value = default
-        self._allow_none = allow_none
         self._env_bind = env_bind
-        if not allow_none:
-            assert self._value is not None, "Default value cannot be None if allow_none is False"
 
         if self._env_bind is not None:
             env_value = os.getenv(self._env_bind)
@@ -231,12 +263,7 @@ class BoolArg(Arg[bool]):
             if value.lower().strip() in ('none', 'null'):
                 value = None
         if value is None:
-            if not self._allow_none:
-                raise ValueError("Value cannot be None")
-            else:
-                result = deepcopy(self)
-                result._value = value
-                return result
+            raise ValueError("Value cannot be None")
 
         if isinstance(value, str):
             if value.lower() in ('true', '1', 'yes'):
@@ -252,8 +279,18 @@ class BoolArg(Arg[bool]):
             raise ValueError(f"Cannot convert {value} to bool")
 
         result = deepcopy(self)
+        assert isinstance(value, bool)
         result._value = value
         return result
+
+    def build_widget(self, key: str, container: DeltaGenerator) -> None:
+        label = key.split('.')[-1]
+        assert isinstance(self._value, bool)
+        container.checkbox(
+            label=label,
+            value=self._value,
+            key=f'{ST_TAG}.{key}',
+        )
 
 
 class OptionArg(Arg[str]):
@@ -309,3 +346,12 @@ class OptionArg(Arg[str]):
 
     def __repr__(self) -> str:
         return f"OptionArg(value={self._value}, options={self._options}, allow_none={self._allow_none})"
+
+    def build_widget(self, key: str, container: DeltaGenerator) -> None:
+        label = key.split('.')[-1]
+        container.selectbox(
+            label=label,
+            options=self._options,
+            index=self._options.index(self._value) if self._value is not None else None,
+            key=f'{ST_TAG}.{key}',
+        )
