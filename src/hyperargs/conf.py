@@ -27,7 +27,6 @@ C = TypeVar('C', bound='Conf')
 P = ParamSpec('P')
 R = TypeVar('R')
 
-
 class Conf:
     """Base class for configuration objects."""
 
@@ -199,11 +198,14 @@ class Conf:
                 print("  --parse_toml <toml_string>    Parse configuration from TOML string")
                 print("  --parse_yaml <yaml_string>    Parse configuration from YAML string")
                 print("  --config_path <file_path>     Parse configuration from file (supports .json, .toml, .yaml, .yml)")
+                print("  --from_web                    Run configuration in web mode")
                 sys.exit(0)
+            elif sys.argv[1] in ('--from_web', '--from-web'):
+                print('Running configuration in web mode...')
             else:
                 raise ValueError("No command line arguments provided. Use --help for usage information.")
 
-        assert len(sys.argv) >= 3, "Insufficient command line arguments, please refer to --help for usage information"
+        # assert len(sys.argv) >= 3, "Insufficient command line arguments, please refer to --help for usage information"
         config_type = sys.argv[1]
 
         if config_type == '--parse_json':
@@ -232,7 +234,7 @@ class Conf:
             with tempfile.NamedTemporaryFile(delete=False) as temp_file:
                 tmp_path = temp_file.name
 
-            cmd = f'streamlit run {__main__.__file__} --web_mode {tmp_path}'
+            cmd = f'streamlit run {__main__.__file__} web_mode {tmp_path}'
             web_proc = subprocess.Popen(cmd, shell=True)
             web_proc.wait()
 
@@ -245,7 +247,7 @@ class Conf:
                 raise Exception(f"Config from web failed! Error: {e}")
             return instance
 
-        elif config_type == '--web_mode':
+        elif config_type == 'web_mode':
             assert is_running_in_streamlit(), ("Web mode can only be used by the program it self. You should never "
                                                "run it manually.")
 
@@ -315,13 +317,25 @@ class Conf:
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.to_dict()})"
 
-    def build_widgets(self, prefix: Optional[str] = None, container: Optional[DeltaGenerator] = None) -> None:
-        """Build the Streamlit widgets for the configuration."""
-        for key, value in self.__dict__.items():
-            if isinstance(value, Arg):
-                value.build_widgets(key)
-            elif isinstance(value, Conf):
-                value.build_widgets()
+    def build_widgets(self) -> None:
+        build_widgets(self)
+
+CONF_ITEM = Union[Conf, Arg, List['CONF_ITEM']]
+
+def build_widgets(item: CONF_ITEM, prefix: Optional[str] = None, container: Optional[DeltaGenerator] = None) -> None:
+    if isinstance(item, Arg):
+        assert prefix is not None and container is not None, "prefix and container must be provided for Arg"
+        item.build_widget(key=prefix, container=container)
+    elif isinstance(item, Conf):
+        for name in item.field_names():
+            value = getattr(item, name)
+            build_widgets(value, prefix=f"{prefix}.{name}" if prefix else name, container=container)
+    elif isinstance(item, list):
+        assert prefix is not None and container is not None, "prefix and container must be provided for list"
+        for i, sub_item in enumerate(item):
+            build_widgets(sub_item, prefix=f"{prefix}.[{i}]", container=container)
+    else:
+        raise TypeError(f"Unsupported type: {type(item)}")
 
 def _to_json_dict(value: Union[Arg, Conf, list]) -> JSON:
     if isinstance(value, Arg):
