@@ -18,8 +18,8 @@ import yaml
 import streamlit as st
 from streamlit.delta_generator import DeltaGenerator
 
-from .args import Arg, JSON
-from .utils import is_running_in_streamlit, get_conf_dict_from_session
+from .args import Arg, JSON, ST_TAG, JSON_VALUE
+from .utils import is_running_in_streamlit, get_conf_dict_from_session, find_chaned_values
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +85,9 @@ class Conf:
 
         return values
 
-    def field_names(self) -> Set[str]:
+    def field_names(self) -> List[str]:
         """Get the names of all fields in the configuration."""
-        return set(self.to_dict().keys())
+        return list(self.to_dict().keys())
 
     def to_json(self, indent: Optional[Union[str, int]] = None) -> str:
         """Convert the configuration to a JSON string."""
@@ -233,18 +233,23 @@ class Conf:
         elif config_type == '--from_web':
             with tempfile.NamedTemporaryFile(delete=False) as temp_file:
                 tmp_path = temp_file.name
-
+            print(tmp_path)
             cmd = f'streamlit run {__main__.__file__} web_mode {tmp_path}'
             web_proc = subprocess.Popen(cmd, shell=True)
             web_proc.wait()
 
             with open(tmp_path, 'r', encoding='utf-8') as f:
                 content = f.read()
+                print(content)
 
             try:
                 instance = cls.from_json(content, strict=strict)
             except Exception as e:
                 raise Exception(f"Config from web failed! Error: {e}")
+
+            # delete the temp file
+            os.remove(tmp_path)
+
             return instance
 
         elif config_type == 'web_mode':
@@ -254,11 +259,32 @@ class Conf:
             assert len(sys.argv) == 3, "Web mode file path must be provided as a command line argument"
             file_path = sys.argv[2]
 
-            instance = cls()
-            previous_dict = get_conf_dict_from_session()
-            instance.from_dict(previous_dict, strict=strict)
+            with open(file_path, 'r') as f:
+                previous_content = f.read()
+            if len(previous_content) > 1:
+                instance = cls.from_json(previous_content, strict=strict)
+            else:
+                instance = cls()
+
+            print('pre', instance)
+
+            if 'reset_params' in st.session_state:
+                changed_keys = st.session_state['reset_params']
+                assert isinstance(changed_keys, dict)
+                for k, v in changed_keys.items():
+                    st.session_state[f'{ST_TAG}.{k}'] = v
 
             instance.build_widgets()
+            settings = get_conf_dict_from_session()
+            print('settings', settings)
+            instance = cls.from_dict(settings)
+            print('after', instance)
+            changed_keys = find_chaned_values(settings, instance.to_dict())
+            print('changed_keys', changed_keys)
+            if len(changed_keys) > 0:
+                need_rerun = True
+            else:
+                need_rerun = False
 
             st.markdown("## Parameters in Json")
             st.code(
@@ -295,6 +321,13 @@ class Conf:
                 p = psutil.Process(pid)
                 p.terminate()
 
+            if need_rerun:
+                st.session_state['reset_params'] = changed_keys
+                st.rerun()
+            else:
+                if 'reset_params' in st.session_state:
+                    del st.session_state['reset_params']
+
             st.stop()
         else:
             raise ValueError("Unsupported command line argument. Use --parse_json, --parse_toml, --parse_yaml, or --config_path")
@@ -327,15 +360,38 @@ def build_widgets(item: CONF_ITEM, prefix: Optional[str] = None, container: Opti
         assert prefix is not None and container is not None, "prefix and container must be provided for Arg"
         item.build_widget(key=prefix, container=container)
     elif isinstance(item, Conf):
+        if container is None:
+            next_contaier = st.container(border=True)
+            next_contaier.write(prefix if prefix is not None else item.__class__.__name__)
+        else:
+            next_contaier = container
         for name in item.field_names():
             value = getattr(item, name)
-            build_widgets(value, prefix=f"{prefix}.{name}" if prefix else name, container=container)
+
+            build_widgets(value, prefix=f"{prefix}.{name}" if prefix else name, container=next_contaier)
     elif isinstance(item, list):
         assert prefix is not None and container is not None, "prefix and container must be provided for list"
+        next_container = container.container(border=True)
+        next_container.write(prefix)
         for i, sub_item in enumerate(item):
-            build_widgets(sub_item, prefix=f"{prefix}.[{i}]", container=container)
+            build_widgets(sub_item, prefix=f"{prefix}.[{i}]", container=next_container)
     else:
         raise TypeError(f"Unsupported type: {type(item)}")
+
+def update_widgets(settings: JSON, prefix: Optional[str] = None) -> None:
+    """Update the widgets according to the settings."""
+    if prefix is None:
+        prefix = ST_TAG
+    if isinstance(settings, dict):
+        for name, value in settings.items():
+            update_widgets(value, prefix=f"{prefix}.{name}")
+    elif isinstance(settings, list):
+        for i, item in enumerate(settings):
+            update_widgets(item, prefix=f"{prefix}.[{i}]")
+    else:
+        print(f"Update {prefix} to {settings}")
+        if prefix in st.session_state and st.session_state[prefix] != settings:
+            st.session_state[prefix] = settings
 
 def _to_json_dict(value: Union[Arg, Conf, list]) -> JSON:
     if isinstance(value, Arg):

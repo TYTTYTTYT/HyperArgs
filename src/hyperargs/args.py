@@ -12,12 +12,9 @@ from copy import deepcopy
 from streamlit.delta_generator import DeltaGenerator
 
 # JSON can be: object, array, string, number, boolean, or null
+JSON_VALUE = Union[str, int, float, bool, None]
 JSON = Union[
-    str,
-    int,
-    float,
-    bool,
-    None,
+    JSON_VALUE,
     Dict[str, "JSON"],
     List["JSON"],
 ]
@@ -194,6 +191,7 @@ class FloatArg(Arg[float]):
             min_value=self._min_value,
             max_value=self._max_value,
             key=f'{ST_TAG}.{key}',
+            format='%f'
         )
 
 
