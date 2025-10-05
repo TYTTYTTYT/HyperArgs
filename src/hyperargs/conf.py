@@ -1,23 +1,31 @@
-from typing import Any, Dict, Union, Optional, Type, Callable, TypeVar, ParamSpec, Set, List
+from typing import Any, Dict, Union, Optional, Type, Callable, TypeVar, ParamSpec, Set, List, overload
 from collections import defaultdict
 import copy
 import json
 import logging
 import sys
+import __main__
+import tempfile
+import subprocess
+import os
+import time
+import psutil
 
 import networkx as nx
 import tomli
 import tomli_w
 import yaml
+import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
 
-from .args import Arg, JSON
+from .args import Arg, JSON, ST_TAG, JSON_VALUE
+from .utils import is_running_in_streamlit, get_conf_dict_from_session, find_chaned_values
 
 logger = logging.getLogger(__name__)
 
 C = TypeVar('C', bound='Conf')
 P = ParamSpec('P')
 R = TypeVar('R')
-
 
 class Conf:
     """Base class for configuration objects."""
@@ -76,6 +84,10 @@ class Conf:
             values[name] = _to_json_dict(value)
 
         return values
+
+    def field_names(self) -> List[str]:
+        """Get the names of all fields in the configuration."""
+        return list(self.to_dict().keys())
 
     def to_json(self, indent: Optional[Union[str, int]] = None) -> str:
         """Convert the configuration to a JSON string."""
@@ -186,11 +198,14 @@ class Conf:
                 print("  --parse_toml <toml_string>    Parse configuration from TOML string")
                 print("  --parse_yaml <yaml_string>    Parse configuration from YAML string")
                 print("  --config_path <file_path>     Parse configuration from file (supports .json, .toml, .yaml, .yml)")
+                print("  --from_web                    Run configuration in web mode")
                 sys.exit(0)
+            elif sys.argv[1] in ('--from_web', '--from-web'):
+                print('Running configuration in web mode...')
             else:
                 raise ValueError("No command line arguments provided. Use --help for usage information.")
 
-        assert len(sys.argv) >= 3, "Insufficient command line arguments, please refer to --help for usage information"
+        # assert len(sys.argv) >= 3, "Insufficient command line arguments, please refer to --help for usage information"
         config_type = sys.argv[1]
 
         if config_type == '--parse_json':
@@ -215,6 +230,128 @@ class Conf:
                 return cls.from_yaml(content, strict=strict)
             else:
                 raise ValueError("Unsupported configuration file format. Supported formats: .json, .toml, .yaml, .yml")
+        elif config_type == '--from_web':
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                tmp_path = temp_file.name
+            cmd = f'streamlit run {__main__.__file__} web_mode {tmp_path}'
+            web_proc = subprocess.Popen(cmd, shell=True)
+            web_proc.wait()
+
+            with open(tmp_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            try:
+                instance = cls.from_json(content, strict=strict)
+            except Exception as e:
+                raise Exception(f"Config from web failed! Error: {e}")
+
+            # delete the temp file
+            os.remove(tmp_path)
+
+            return instance
+
+        elif config_type == 'web_mode':
+            assert is_running_in_streamlit(), ("Web mode can only be used by the program it self. You should never "
+                                               "run it manually.")
+            st.set_page_config(layout="wide")
+            st.sidebar.markdown("## HyperArgs - Web")
+            st.markdown("# Program Arguments")
+
+            st.markdown(f"Please set the parameters in the table, then click **'Finish & Run'** to run the "
+                                "program.")
+            assert len(sys.argv) == 3, "Web mode file path must be provided as a command line argument"
+            file_path = sys.argv[2]
+
+            with open(file_path, 'r') as f:
+                previous_content = f.read()
+            if len(previous_content) > 1:
+                instance = cls.from_json(previous_content, strict=strict)
+            else:
+                instance = cls()
+
+            changed_keys_old = {}
+            if 'reset_params' in st.session_state:
+                changed_keys_old = st.session_state['reset_params']
+                assert isinstance(changed_keys_old, dict)
+                for k, v in changed_keys_old.items():
+                    st.session_state[f'{ST_TAG}.{k}'] = v
+
+            instance.build_widgets()
+            settings = get_conf_dict_from_session()
+            instance = cls.from_dict(settings)
+            changed_keys = find_chaned_values(settings, instance.to_dict())
+            
+            for k in list(changed_keys.keys()):
+                if k in changed_keys_old:
+                    if changed_keys_old[k] == changed_keys[k]:
+                        del changed_keys[k]
+            if len(changed_keys) > 0:
+                need_rerun = True
+            else:
+                need_rerun = False
+
+            st.markdown("## Parameters")
+            left, mid, right = st.columns(3)
+            left.markdown("**JSON**")
+            left.code(
+                body=instance.to_json(indent=2),
+                language='json',
+                line_numbers=True,
+            )
+            mid.markdown("**TOML**")
+            try:
+                mid.code(
+                    body=instance.to_toml(),
+                    language='toml',
+                    line_numbers=True,
+                )
+            except Exception as e:
+                st.error(f"Failed to generate TOML: {e}")
+            right.markdown("**YAML**")
+            try:
+                right.code(
+                    body=instance.to_yaml(),
+                    language='yaml',
+                    line_numbers=True,
+                )
+            except Exception as e:
+                st.error(f"Failed to generate YAML: {e}")
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(instance.to_json(indent=2))
+
+            if need_rerun:
+                st.session_state['reset_params'] = changed_keys
+                st.rerun()
+            else:
+                if 'reset_params' in st.session_state:
+                    del st.session_state['reset_params']
+
+            default_path = os.getcwd()
+            save_path = st.sidebar.text_input("Input folder to save config file:", default_path)
+            st.sidebar.selectbox(label='File format:', options=['JSON', 'TOML', 'YAML'], index=0, key='file_format')
+            if st.sidebar.button("Save"):
+                if os.path.isdir(save_path):
+                    file_name = os.path.join(save_path, f"{instance.__class__.__name__}.{st.session_state['file_format'].lower()}")
+                    instance.save_to_file(file_name)
+                    st.sidebar.success(f"Config file has been saved to: {file_name}")
+                else:
+                    st.sidebar.error("Invalid path. Please enter a valid directory.")
+
+            exit_app = st.sidebar.button("Finish & Run", help="Click to run the program with the current parameters.", type='primary')
+            if exit_app:
+                @st.dialog(title='Info')
+                def end_program():
+                    st.write("Program will run with the current parameters.")
+                    st.write("The configuration server is closing in 5 seconds. You can now close this tab.")
+                end_program()
+
+                time.sleep(5)
+                pid = os.getpid()
+                p = psutil.Process(pid)
+                p.terminate()
+
+            st.stop()
         else:
             raise ValueError("Unsupported command line argument. Use --parse_json, --parse_toml, --parse_yaml, or --config_path")
 
@@ -236,6 +373,49 @@ class Conf:
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.to_dict()})"
 
+    def build_widgets(self) -> None:
+        build_widgets(self)
+
+CONF_ITEM = Union[Conf, Arg, List['CONF_ITEM']]
+
+def build_widgets(item: CONF_ITEM, prefix: Optional[str] = None, container: Optional[DeltaGenerator] = None) -> None:
+    if isinstance(item, Arg):
+        assert prefix is not None and container is not None, "prefix and container must be provided for Arg"
+        item.build_widget(key=prefix, container=container)
+    elif isinstance(item, Conf):
+        if container is None:
+            next_contaier = st.container(border=True)
+            next_contaier.write(prefix.split('.')[-1] if prefix is not None else item.__class__.__name__)
+        else:
+            next_contaier = container.container(border=True)
+            next_contaier.write(prefix.split('.')[-1] if prefix is not None else item.__class__.__name__)
+        for name in item.field_names():
+            value = getattr(item, name)
+
+            build_widgets(value, prefix=f"{prefix}.{name}" if prefix else name, container=next_contaier)
+    elif isinstance(item, list):
+        assert prefix is not None and container is not None, "prefix and container must be provided for list"
+        next_container = container.container(border=True)
+        next_container.write(prefix.split('.')[-1])
+        for i, sub_item in enumerate(item):
+            build_widgets(sub_item, prefix=f"{prefix}.[{i}]", container=next_container)
+    else:
+        raise TypeError(f"Unsupported type: {type(item)}")
+
+def update_widgets(settings: JSON, prefix: Optional[str] = None) -> None:
+    """Update the widgets according to the settings."""
+    if prefix is None:
+        prefix = ST_TAG
+    if isinstance(settings, dict):
+        for name, value in settings.items():
+            update_widgets(value, prefix=f"{prefix}.{name}")
+    elif isinstance(settings, list):
+        for i, item in enumerate(settings):
+            update_widgets(item, prefix=f"{prefix}.[{i}]")
+    else:
+        if prefix in st.session_state and st.session_state[prefix] != settings:
+            st.session_state[prefix] = settings
+
 def _to_json_dict(value: Union[Arg, Conf, list]) -> JSON:
     if isinstance(value, Arg):
         return value.value()
@@ -254,8 +434,11 @@ def _parse_attr(value: JSON, attr: Union[Arg, Conf, list]) -> Union[Arg, Conf, l
         return attr.from_dict(value)
     elif isinstance(attr, (list, tuple)):
         assert isinstance(value, (list, tuple)), f"Expected list/tuple for attribute, got {type(value)}"
-        assert len(value) == len(attr), "Length of value and attribute list must match"
-        return [_parse_attr(v, a) for v, a in zip(value, attr)]
+        # assert len(value) <= len(attr), f"Length of value and attribute list must match, but got {len(value)} and {len(attr)}"
+        result = [_parse_attr(v, a) for v, a in zip(value, attr)]
+        if len(attr) > len(value):
+            result.extend([copy.deepcopy(a) for a in attr[len(value):]])
+        return result
     else:
         raise TypeError(f"Unsupported attribute type: {type(attr)}")
 
