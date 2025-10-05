@@ -160,13 +160,13 @@ print(conf.optimizer.value())  # "sgd"
 - Parse from config files
 - Convert and save configs
 
-### Stage 2 — Command line flags 🚧
-- Parse configs directly from CLI flags  
-  (e.g. `--optimizer.params.learning_rate 0.01 --batch_size 64`)
-
-### Stage 3 — GUI settings 🚧
+### Stage 2 — GUI settings ✅
 - Popup browser page to set configs interactively
 - Export configs after editing
+
+### Stage 3 — Command line flags 🚧
+- Parse configs directly from CLI flags  
+  (e.g. `--optimizer.params.learning_rate 0.01 --batch_size 64`)
 
 ## License
 
