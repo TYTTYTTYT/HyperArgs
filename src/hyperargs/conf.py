@@ -233,14 +233,12 @@ class Conf:
         elif config_type == '--from_web':
             with tempfile.NamedTemporaryFile(delete=False) as temp_file:
                 tmp_path = temp_file.name
-            print(tmp_path)
             cmd = f'streamlit run {__main__.__file__} web_mode {tmp_path}'
             web_proc = subprocess.Popen(cmd, shell=True)
             web_proc.wait()
 
             with open(tmp_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                print(content)
 
             try:
                 instance = cls.from_json(content, strict=strict)
@@ -255,7 +253,12 @@ class Conf:
         elif config_type == 'web_mode':
             assert is_running_in_streamlit(), ("Web mode can only be used by the program it self. You should never "
                                                "run it manually.")
+            st.set_page_config(layout="wide")
+            st.sidebar.markdown("## HyperArgs - Web")
+            st.markdown("# Program Arguments")
 
+            st.markdown(f"Please set the parameters in the table, then click **'Finish & Run'** to run the "
+                                "program.")
             assert len(sys.argv) == 3, "Web mode file path must be provided as a command line argument"
             file_path = sys.argv[2]
 
@@ -266,49 +269,76 @@ class Conf:
             else:
                 instance = cls()
 
-            print('pre', instance)
-
+            changed_keys_old = {}
             if 'reset_params' in st.session_state:
-                changed_keys = st.session_state['reset_params']
-                assert isinstance(changed_keys, dict)
-                for k, v in changed_keys.items():
+                changed_keys_old = st.session_state['reset_params']
+                assert isinstance(changed_keys_old, dict)
+                for k, v in changed_keys_old.items():
                     st.session_state[f'{ST_TAG}.{k}'] = v
 
             instance.build_widgets()
             settings = get_conf_dict_from_session()
-            print('settings', settings)
             instance = cls.from_dict(settings)
-            print('after', instance)
             changed_keys = find_chaned_values(settings, instance.to_dict())
-            print('changed_keys', changed_keys)
+            
+            for k in list(changed_keys.keys()):
+                if k in changed_keys_old:
+                    if changed_keys_old[k] == changed_keys[k]:
+                        del changed_keys[k]
             if len(changed_keys) > 0:
                 need_rerun = True
             else:
                 need_rerun = False
 
-            st.markdown("## Parameters in Json")
-            st.code(
+            st.markdown("## Parameters")
+            left, mid, right = st.columns(3)
+            left.markdown("**JSON**")
+            left.code(
                 body=instance.to_json(indent=2),
                 language='json',
                 line_numbers=True,
             )
-            st.markdown("## Parameters in Toml")
-            st.code(
-                body=instance.to_toml(),
-                language='toml',
-                line_numbers=True,
-            )
-            st.markdown("## Parameters in Yaml")
-            st.code(
-                body=instance.to_yaml(),
-                language='yaml',
-                line_numbers=True,
-            )
+            mid.markdown("**TOML**")
+            try:
+                mid.code(
+                    body=instance.to_toml(),
+                    language='toml',
+                    line_numbers=True,
+                )
+            except Exception as e:
+                st.error(f"Failed to generate TOML: {e}")
+            right.markdown("**YAML**")
+            try:
+                right.code(
+                    body=instance.to_yaml(),
+                    language='yaml',
+                    line_numbers=True,
+                )
+            except Exception as e:
+                st.error(f"Failed to generate YAML: {e}")
 
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(instance.to_json(indent=2))
 
-            exit_app = st.button("Run ", help="Click to run the program with the current parameters.")
+            if need_rerun:
+                st.session_state['reset_params'] = changed_keys
+                st.rerun()
+            else:
+                if 'reset_params' in st.session_state:
+                    del st.session_state['reset_params']
+
+            default_path = os.getcwd()
+            save_path = st.sidebar.text_input("Input folder to save config file:", default_path)
+            st.sidebar.selectbox(label='File format:', options=['JSON', 'TOML', 'YAML'], index=0, key='file_format')
+            if st.sidebar.button("Save"):
+                if os.path.isdir(save_path):
+                    file_name = os.path.join(save_path, f"{instance.__class__.__name__}.{st.session_state['file_format'].lower()}")
+                    instance.save_to_file(file_name)
+                    st.sidebar.success(f"Config file has been saved to: {file_name}")
+                else:
+                    st.sidebar.error("Invalid path. Please enter a valid directory.")
+
+            exit_app = st.sidebar.button("Finish & Run", help="Click to run the program with the current parameters.", type='primary')
             if exit_app:
                 @st.dialog(title='Info')
                 def end_program():
@@ -320,13 +350,6 @@ class Conf:
                 pid = os.getpid()
                 p = psutil.Process(pid)
                 p.terminate()
-
-            if need_rerun:
-                st.session_state['reset_params'] = changed_keys
-                st.rerun()
-            else:
-                if 'reset_params' in st.session_state:
-                    del st.session_state['reset_params']
 
             st.stop()
         else:
@@ -362,9 +385,10 @@ def build_widgets(item: CONF_ITEM, prefix: Optional[str] = None, container: Opti
     elif isinstance(item, Conf):
         if container is None:
             next_contaier = st.container(border=True)
-            next_contaier.write(prefix if prefix is not None else item.__class__.__name__)
+            next_contaier.write(prefix.split('.')[-1] if prefix is not None else item.__class__.__name__)
         else:
-            next_contaier = container
+            next_contaier = container.container(border=True)
+            next_contaier.write(prefix.split('.')[-1] if prefix is not None else item.__class__.__name__)
         for name in item.field_names():
             value = getattr(item, name)
 
@@ -372,7 +396,7 @@ def build_widgets(item: CONF_ITEM, prefix: Optional[str] = None, container: Opti
     elif isinstance(item, list):
         assert prefix is not None and container is not None, "prefix and container must be provided for list"
         next_container = container.container(border=True)
-        next_container.write(prefix)
+        next_container.write(prefix.split('.')[-1])
         for i, sub_item in enumerate(item):
             build_widgets(sub_item, prefix=f"{prefix}.[{i}]", container=next_container)
     else:
@@ -389,7 +413,6 @@ def update_widgets(settings: JSON, prefix: Optional[str] = None) -> None:
         for i, item in enumerate(settings):
             update_widgets(item, prefix=f"{prefix}.[{i}]")
     else:
-        print(f"Update {prefix} to {settings}")
         if prefix in st.session_state and st.session_state[prefix] != settings:
             st.session_state[prefix] = settings
 
@@ -411,8 +434,11 @@ def _parse_attr(value: JSON, attr: Union[Arg, Conf, list]) -> Union[Arg, Conf, l
         return attr.from_dict(value)
     elif isinstance(attr, (list, tuple)):
         assert isinstance(value, (list, tuple)), f"Expected list/tuple for attribute, got {type(value)}"
-        assert len(value) == len(attr), "Length of value and attribute list must match"
-        return [_parse_attr(v, a) for v, a in zip(value, attr)]
+        # assert len(value) <= len(attr), f"Length of value and attribute list must match, but got {len(value)} and {len(attr)}"
+        result = [_parse_attr(v, a) for v, a in zip(value, attr)]
+        if len(attr) > len(value):
+            result.extend([copy.deepcopy(a) for a in attr[len(value):]])
+        return result
     else:
         raise TypeError(f"Unsupported attribute type: {type(attr)}")
 
