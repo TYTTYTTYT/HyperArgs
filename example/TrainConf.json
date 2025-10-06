@@ -1,0 +1,26 @@
+{
+  "batch_size": 32,
+  "conditioned_arg": 2,
+  "int_arg": 1,
+  "len_lst": 2,
+  "lst": [
+    {
+      "lr": 0.061000000000000006,
+      "momentum": 0.02
+    },
+    {
+      "lr": 0.001,
+      "momentum": 0.0
+    }
+  ],
+  "message": "Hello World!",
+  "num_epochs": 10,
+  "optimizer_conf": {
+    "beta1": 0.9,
+    "beta2": 0.999,
+    "epsilon": 1e-08,
+    "lr": 5e-05
+  },
+  "optimizer_type": "adam",
+  "use_gpu": true
+}

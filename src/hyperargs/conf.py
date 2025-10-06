@@ -1,4 +1,5 @@
 from typing import Any, Dict, Union, Optional, Type, Callable, TypeVar, ParamSpec, Set, List, overload
+from typing_extensions import Self
 from collections import defaultdict
 import copy
 import json
@@ -19,7 +20,7 @@ import streamlit as st
 from streamlit.delta_generator import DeltaGenerator
 
 from .args import Arg, JSON, ST_TAG, JSON_VALUE
-from .utils import is_running_in_streamlit, get_conf_dict_from_session, find_chaned_values
+from .utils import is_running_in_streamlit, get_conf_dict_from_session, find_chaned_values, is_dict_different
 
 logger = logging.getLogger(__name__)
 
@@ -145,15 +146,36 @@ class Conf:
     def from_dict(cls: Type[C], data: Dict[str, JSON], strict: bool = False) -> C:
         """Create a configuration instance from a dictionary. TODO"""
         instance = cls()
-        data = copy.deepcopy(data)
+        data_ = copy.deepcopy(data)
 
         for name in nx.topological_sort(instance._dep_graph):
-            if name in data:
-                value = data[name]
+            if name in data_:
+                value = data_[name]
                 attr = getattr(cls, name)
 
                 parsed_value = _parse_attr(value, attr)
                 setattr(instance, name, parsed_value)
+
+                data_.pop(name)
+
+        if strict and data_:
+            raise ValueError(f"Unexpected fields in data: {list(data_.keys())}")
+        elif data_:
+            logger.warning(f"Ignored unexpected fields in data: {list(data_.keys())}")
+
+        return instance.parse_dict(data, strict=strict)
+
+    def parse_dict(self, data: Dict[str, JSON], strict: bool = False) -> Self:
+        """Create a configuration instance from a dictionary. TODO"""
+        data = copy.deepcopy(data)
+
+        for name in nx.topological_sort(self._dep_graph):
+            if name in data:
+                value = data[name]
+                attr = getattr(self, name)
+
+                parsed_value = _update_parse_attr(value, attr)
+                setattr(self, name, parsed_value)
 
                 data.pop(name)
 
@@ -162,7 +184,7 @@ class Conf:
         elif data:
             logger.warning(f"Ignored unexpected fields in data: {list(data.keys())}")
 
-        return instance
+        return self
 
     @classmethod
     def from_json(cls: Type[C], json_str: str, strict: bool = False) -> C:
@@ -237,9 +259,8 @@ class Conf:
             web_proc = subprocess.Popen(cmd, shell=True)
             web_proc.wait()
 
-            with open(tmp_path, 'r', encoding='utf-8') as f:
+            with open(tmp_path, 'r') as f:
                 content = f.read()
-
             try:
                 instance = cls.from_json(content, strict=strict)
             except Exception as e:
@@ -262,35 +283,24 @@ class Conf:
             assert len(sys.argv) == 3, "Web mode file path must be provided as a command line argument"
             file_path = sys.argv[2]
 
-            with open(file_path, 'r') as f:
-                previous_content = f.read()
-            if len(previous_content) > 1:
-                instance = cls.from_json(previous_content, strict=strict)
+            if 'previous_instance' in st.session_state:
+                instance = st.session_state['previous_instance']
             else:
                 instance = cls()
 
-            changed_keys_old = {}
-            if 'reset_params' in st.session_state:
-                changed_keys_old = st.session_state['reset_params']
-                assert isinstance(changed_keys_old, dict)
-                for k, v in changed_keys_old.items():
-                    st.session_state[f'{ST_TAG}.{k}'] = v
+            for k in list(st.session_state.keys()):
+                if not isinstance(k, str):
+                    continue
+                if k.startswith(f'_{ST_TAG}.'):
+                    key = f"{ST_TAG}.{k.split('.')[-1]}"
+                    st.session_state[key] = st.session_state[k]
+                    del st.session_state[k]
 
             instance.build_widgets()
             settings = get_conf_dict_from_session()
-            instance = cls.from_dict(settings)
-            changed_keys = find_chaned_values(settings, instance.to_dict())
-            
-            for k in list(changed_keys.keys()):
-                if k in changed_keys_old:
-                    if changed_keys_old[k] == changed_keys[k]:
-                        del changed_keys[k]
-            if len(changed_keys) > 0:
-                need_rerun = True
-            else:
-                need_rerun = False
+            instance = instance.parse_dict(settings)
 
-            st.markdown("## Parameters")
+            st.markdown("## Current settings")
             left, mid, right = st.columns(3)
             left.markdown("**JSON**")
             left.code(
@@ -317,22 +327,18 @@ class Conf:
             except Exception as e:
                 st.error(f"Failed to generate YAML: {e}")
 
-            with open(file_path, 'w', encoding='utf-8') as f:
+            with open(file_path, 'w') as f:
                 f.write(instance.to_json(indent=2))
-
-            if need_rerun:
-                st.session_state['reset_params'] = changed_keys
-                st.rerun()
-            else:
-                if 'reset_params' in st.session_state:
-                    del st.session_state['reset_params']
 
             default_path = os.getcwd()
             save_path = st.sidebar.text_input("Input folder to save config file:", default_path)
             st.sidebar.selectbox(label='File format:', options=['JSON', 'TOML', 'YAML'], index=0, key='file_format')
-            if st.sidebar.button("Save"):
+            if st.sidebar.button("Save config"):
                 if os.path.isdir(save_path):
-                    file_name = os.path.join(save_path, f"{instance.__class__.__name__}.{st.session_state['file_format'].lower()}")
+                    file_name = os.path.join(
+                        save_path, 
+                        f"{instance.__class__.__name__}.{st.session_state['file_format'].lower()}"
+                    )
                     instance.save_to_file(file_name)
                     st.sidebar.success(f"Config file has been saved to: {file_name}")
                 else:
@@ -340,16 +346,24 @@ class Conf:
 
             exit_app = st.sidebar.button("Finish & Run", help="Click to run the program with the current parameters.", type='primary')
             if exit_app:
-                @st.dialog(title='Info')
+                @st.dialog(title='Continue running in 5 seconds...')
                 def end_program():
-                    st.write("Program will run with the current parameters.")
-                    st.write("The configuration server is closing in 5 seconds. You can now close this tab.")
+                    st.write("### The connection breaks in 5 seconds, you can now close this tab.")
                 end_program()
 
                 time.sleep(5)
                 pid = os.getpid()
                 p = psutil.Process(pid)
                 p.terminate()
+
+            st.session_state['previous_instance'] = instance
+
+            gui_states = get_conf_dict_from_session()
+            if is_dict_different(instance.to_dict(), gui_states):
+                changed_values = find_chaned_values(gui_states, instance.to_dict())
+                for k, v in changed_values.items():
+                    st.session_state[f'_{ST_TAG}.{k}'] = v
+                st.rerun()
 
             st.stop()
         else:
@@ -436,6 +450,22 @@ def _parse_attr(value: JSON, attr: Union[Arg, Conf, list]) -> Union[Arg, Conf, l
         assert isinstance(value, (list, tuple)), f"Expected list/tuple for attribute, got {type(value)}"
         # assert len(value) <= len(attr), f"Length of value and attribute list must match, but got {len(value)} and {len(attr)}"
         result = [_parse_attr(v, a) for v, a in zip(value, attr)]
+        if len(attr) > len(value):
+            result.extend([copy.deepcopy(a) for a in attr[len(value):]])
+        return result
+    else:
+        raise TypeError(f"Unsupported attribute type: {type(attr)}")
+
+def _update_parse_attr(value: JSON, attr: Union[Arg, Conf, list]) -> Union[Arg, Conf, list]:
+    if isinstance(attr, Arg):
+        return attr.parse(value)
+    elif isinstance(attr, Conf):
+        assert isinstance(value, dict), f"Expected dict for Conf attribute, got {type(value)}"
+        return attr.parse_dict(value)
+    elif isinstance(attr, (list, tuple)):
+        assert isinstance(value, (list, tuple)), f"Expected list/tuple for attribute, got {type(value)}"
+        # assert len(value) <= len(attr), f"Length of value and attribute list must match, but got {len(value)} and {len(attr)}"
+        result = [_update_parse_attr(v, a) for v, a in zip(value, attr)]
         if len(attr) > len(value):
             result.extend([copy.deepcopy(a) for a in attr[len(value):]])
         return result
