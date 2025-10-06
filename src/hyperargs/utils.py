@@ -161,6 +161,35 @@ def flatten_dict(
                 
     return dict(items)
 
+def is_dict_different(
+    d1: Dict[str, JSON],
+    d2: Dict[str, JSON],
+) -> bool:
+    """
+    Check if two dictionaries are different.
+
+    Args:
+        d1 (Dict[str, JSON]): The first dictionary.
+        d2 (Dict[str, JSON]): The second dictionary.
+        sep (str, optional): The separator used in the flattened keys. Defaults to '.'.
+
+    Returns:
+        bool: True if the dictionaries are different, False otherwise.
+    """
+    d1_flat = flatten_dict(d1)
+    d2_flat = flatten_dict(d2)
+
+    for k, v in d1_flat.items():
+        if k not in d2_flat:
+            return True
+        if d2_flat[k] != v:
+            return True
+    for k, v in d2_flat.items():
+        if k not in d1_flat:
+            return True
+
+    return False
+
 def find_chaned_values(
     d1: Dict[str, JSON],
     d2: Dict[str, JSON],
@@ -181,13 +210,7 @@ def find_chaned_values(
 
     changed_keys = {}
     for k, v in d1_flat.items():
-        if k not in d2_flat:
-            changed_keys[k] = v
-            continue
-        if d2_flat[k] != v:
+        if k in d2_flat and d2_flat[k] != v:
             changed_keys[k] = d2_flat[k]
-    for k, v in d2_flat.items():
-        if k not in d1_flat:
-            changed_keys[k] = v
 
     return changed_keys

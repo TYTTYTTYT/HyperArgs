@@ -1,105 +1,107 @@
 # HyperArgs
 
-**HyperArgs** is a typed configuration library for Python.  
-It lets you define hyperparameters and settings as strongly typed Python classes, parse them from multiple sources (command line, JSON, TOML, YAML), enforce dependency constraints, and monitor field changes with decorators.  
+**HyperArgs** HyperArgs is a typed configuration library with automatic WEB GUI for Python.
 
-HyperArgs provides:
-- **Typed arguments** — `IntArg`, `FloatArg`, `StrArg`, `BoolArg`, `OptionArg`.  
-- **Config classes** — subclass `Conf` to declare structured, type-safe settings.  
-- **Multi-source parsing** — load from CLI, JSON, TOML, YAML, or dict.  
-- **Dependency management** — declare relationships between fields.  
-- **Change monitoring** — automatically trigger updates when fields change.  
-- **Environment variable binding** — args can bind to env vars via `env_bind`.  
+It lets you define hyperparameters and settings as strongly typed Python classes, parse them from multiple sources (command line, JSON, TOML, YAML) or configure them from a WEB GUI interface, enforce dependency constraints, and monitor field changes with decorators.  
 
-## Installation
+## Quick Start
+
+### 1. Install
 
 ```bash
 pip install hyperargs
 ```
 
-## Quick Start
+---
 
-### 1. Define a configuration
+### 2. Have a try
+
+- **(Recommand!)** From GUI interface:
+
+```bash
+python example/example.py --from_web
+```
+You can save the configuration to a file after you have configured it.
+
+<p align="center">
+  <video src="example/hyperargs_represent.mp4"></video>
+</p>
+
+- From saved configuration file:
+
+```bash
+python example/example.py --config_path example/TrainConf.toml
+```
+Supported formats: .json, .toml, .yaml, .yml.
+
+- From command line flags:
+
+```bash
+python train.py --parse_json '{
+  "batch_size": 32,
+  "num_epochs": 10,
+  "optimizer_conf": {
+    "lr": 5e-5,
+    "momentum": 0.04
+  },
+  "optimizer_type": "sgd",
+  "use_gpu": true
+}'
+```
+
+---
+
+### 3. Config dependencies
+
+Many programs require dynamic dependencies between fields. HyperArgs lets you define monitors and dependencies between fields to dynamically update fields when value changes.
+
+In the `example.py`, the config of `optimizer_conf` depends on `optimizer_type`. Thus we add a monitor method `change_optimizer` to switch the config to the correct type when `optimizer_type` is being setted.
+
+During the initialization or parsing process, the monitors will be triggered to update the dependent fields. To ensure that the conditioned fields gets updated correctly, you should set the dependency order correctly. In the example.py, we set the dependency order as `optimizer_type -> int_arg -> len_lst`. So the `change_optimizer` monitor will be triggered before parsing arguments for the `optimizer_conf`.
+
+In another case, the value of `conditioned_arg` depends on `int_arg`. Thus we add the dependency `conditioned_arg -> int_arg`. During the parsing process, the `change_b` monitor will be triggered after parsing the `conditioned_arg`, so the `conditioned_arg` will be updated according to the value of `int_arg` rather than the default value.
 
 ```python
-# file: train.py
-
-from hyperargs import Conf, add_dependency, monitor_on
-from hyperargs.args import IntArg, FloatArg, StrArg, BoolArg, OptionArg
-
+@add_dependency("optimizer_type", "optimizer_conf")
+@add_dependency("conditioned_arg", "int_arg")
+@add_dependency("len_lst", "lst")
 class TrainConf(Conf):
-    learning_rate = FloatArg(0.001, min_value=1e-6, max_value=1.0)
+    message = StrArg("Hello World!")
     batch_size = IntArg(32, min_value=1)
     num_epochs = IntArg(10, min_value=1)
-    optimizer = OptionArg("adam", options=["adam", "sgd", "rmsprop"])
+    optimizer_type = OptionArg("adam", options=["adam", "sgd"])
     use_gpu = BoolArg(True)
+    optimizer_conf = Conf()
 
-    @monitor_on("learning_rate")
-    def adjust_schedule(self):
-        print(f"Learning rate changed to {self.learning_rate.value()}")
+    int_arg = IntArg(100)
+    conditioned_arg = IntArg(200)
+    len_lst = IntArg(0, min_value=0)
+    lst = []
 
-conf = TrainConf.parse_command_line(strict=True)
-print(conf)
+    @monitor_on("optimizer_type")   # Change "optimizer_conf" when "optimizer_type" changes
+    def change_optimizer(self):
+        if self.optimizer_type.value() == "adam":
+            if not isinstance(self.optimizer_conf, AdamConf):
+                self.optimizer_conf = AdamConf()
+        elif self.optimizer_type.value() == "sgd":
+            if not isinstance(self.optimizer_conf, SGDConf):
+                self.optimizer_conf = SGDConf()
 
-...
-```
+    @monitor_on("int_arg")  # Change "conditioned_arg" when "int_arg" changes
+    def change_b(self):
+        v = self.int_arg.value()
+        if v is not None:
+            self.conditioned_arg = self.conditioned_arg.parse(v * 2)
 
----
+    @monitor_on("len_lst")  # Change "lst" when "len_lst" changes
+    def change_lst(self):
+        len_lst = self.len_lst.value()
+        if len_lst is not None:
+            if len(self.lst) > len_lst:
+                self.lst = self.lst[:len_lst]
+            elif len(self.lst) < len_lst:
+                self.lst.extend([SGDConf() for _ in range(len_lst - len(self.lst))])
 
-### 2. Parse configurations
-
-- From command line:
-
-```python
-python train.py --config_path config.yaml
-```
-Supported formats: .json, .toml, .yaml, .yml.
-
-- From Python dict:
-
-```python
-conf = TrainConf.from_dict({"learning_rate": 0.01, "batch_size": 64})
-print(conf.to_yaml())
-```
-
----
-
-### 3. Save configurations
-
-```python
-conf.save_to_file("config.json")
-```
-Supported formats: .json, .toml, .yaml, .yml.
-
----
-
-### 4. Add dependencies
-For example, you may want to ensure that the optimizer type is set before its corresponding optimizer config.
-
-```python
-class OptimizerConf(Conf):
-    lr: FloatArg(1e-3)
-
-class AdamConf(OptimizerConf):
-    beta1 = FloatArg(0.9)
-    beta2 = FloatArg(0.999)
-
-class SGDConf(OptimizerConf):
-    momentum = FloatArg(0.9)
-
-# Ensure optimizer type is decided first, then configs are parsed
-@Conf.add_dependency("optim_type", "configs")
-class OptimConf(Conf):
-    optim_type = OptionArg("adam", options=["adam", "sgd"])
-    configs = OptimizerConf()
-
-    # Switch the config to the correct type when optim_type is being setted
-    @Conf.monitor_on('optim_type')
-    def init_configs(self) -> None:
-        if self.optim_type.value() == 'adam':
-            self.configs = AdamConf()
-        elif self.optim_type.value() == 'sgd':
-            self.configs = SGDConf()
 ```
 
 ---
@@ -132,7 +134,7 @@ from hyperargs.args import IntArg, FloatArg, StrArg, BoolArg, OptionArg
     - IntArg(default, min_value=None, max_value=None, allow_none=False, env_bind=None)
 	- FloatArg(default, min_value=None, max_value=None, allow_none=False, env_bind=None)
 	- StrArg(default, allow_none=False, env_bind=None)
-	- BoolArg(default, allow_none=False, env_bind=None)
+	- BoolArg(default, env_bind=None)
 	- OptionArg(default, options, allow_none=False, env_bind=None)
 * **Conf** — base class for config schemas.
 * **monitor_on(fields)** — decorator to watch fields and trigger methods.

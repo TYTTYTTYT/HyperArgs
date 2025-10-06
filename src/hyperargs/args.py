@@ -73,7 +73,8 @@ class IntArg(Arg[int]):
         if self._env_bind is not None:
             env_value = os.getenv(self._env_bind)
             if env_value is not None:
-                self.parse(env_value)
+                self._value = self.parse(env_value)._value
+
 
     def value(self) -> Optional[int]:
         return self._value
@@ -109,7 +110,8 @@ class IntArg(Arg[int]):
                 f"allow_none={self._allow_none})")
 
     def build_widget(self, key: str, container: DeltaGenerator) -> None:
-        label = key.split('.')[-1]
+        label = (f'`int` **{key.split(".")[-1]}** *(min={self._min_value}, max={self._max_value}, '
+                 f'allow_none={self._allow_none})*')
         container.number_input(
             label=label,
             value=self._value,
@@ -148,7 +150,7 @@ class FloatArg(Arg[float]):
         if self._env_bind is not None:
             env_value = os.getenv(self._env_bind)
             if env_value is not None:
-                self.parse(env_value)
+                self._value = self.parse(env_value)._value
 
     def value(self) -> Optional[float]:
         return self._value
@@ -184,7 +186,8 @@ class FloatArg(Arg[float]):
                 f"allow_none={self._allow_none})")
 
     def build_widget(self, key: str, container: DeltaGenerator) -> None:
-        label = key.split('.')[-1]
+        label = (f'`float` **{key.split(".")[-1]}** *(min={self._min_value}, max={self._max_value}, '
+                 f'allow_none={self._allow_none})*')
         container.number_input(
             label=label,
             value=self._value,
@@ -207,7 +210,7 @@ class StrArg(Arg[str]):
         if self._env_bind is not None:
             env_value = os.getenv(self._env_bind)
             if env_value is not None:
-                self.parse(env_value)
+                self._value = self.parse(env_value)._value
 
     def value(self) -> Optional[str]:
         return self._value
@@ -234,7 +237,7 @@ class StrArg(Arg[str]):
         return result
 
     def build_widget(self, key: str, container: DeltaGenerator) -> None:
-        label = key.split('.')[-1]
+        label = (f'`str` **{key.split(".")[-1]}**')        
         container.text_input(
             label=label,
             value=self._value,
@@ -251,7 +254,7 @@ class BoolArg(Arg[bool]):
         if self._env_bind is not None:
             env_value = os.getenv(self._env_bind)
             if env_value is not None:
-                self.parse(env_value)
+                self._value = self.parse(env_value)._value
 
     def value(self) -> Optional[bool]:
         return self._value
@@ -282,13 +285,16 @@ class BoolArg(Arg[bool]):
         return result
 
     def build_widget(self, key: str, container: DeltaGenerator) -> None:
-        label = key.split('.')[-1]
+        label = (f'`bool` **{key.split(".")[-1]}**')        
         assert isinstance(self._value, bool)
         container.checkbox(
             label=label,
             value=self._value,
             key=f'{ST_TAG}.{key}',
         )
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(value={self._value})"
 
 
 class OptionArg(Arg[str]):
@@ -313,7 +319,7 @@ class OptionArg(Arg[str]):
         if self._env_bind is not None:
             env_value = os.getenv(self._env_bind)
             if env_value is not None:
-                self.parse(env_value)
+                self._value = self.parse(env_value)._value
 
     def value(self) -> Optional[str]:
         return self._value
@@ -346,7 +352,7 @@ class OptionArg(Arg[str]):
         return f"OptionArg(value={self._value}, options={self._options}, allow_none={self._allow_none})"
 
     def build_widget(self, key: str, container: DeltaGenerator) -> None:
-        label = key.split('.')[-1]
+        label = (f'`options` **{key.split(".")[-1]}** *(options: {self._options})*')
         container.selectbox(
             label=label,
             options=self._options,

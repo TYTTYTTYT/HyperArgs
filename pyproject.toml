@@ -6,11 +6,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "HyperArgs"
-version = "0.1.0"
+version = "0.1.1"
 authors = [
   { name="Yintao Tai", email="tai.yintao@gmail.com" },
 ]
-description = "HyperArgs is a typed configuration library for Python. Define settings as type-annotated classes; HyperArgs parses command-line flags, configuration files, and environment variables into a single, type-checked object, with an optional browser-based editor."
+description = "HyperArgs is a typed configuration library with automatic WEB GUI for Python."
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
