@@ -23,9 +23,7 @@ python example/example.py --from_web
 ```
 You can save the configuration to a file after you have configured it.
 
-<p align="center">
-  <video src="example/hyperargs_represent.mp4"></video>
-</p>
+![demo](example/demo.gif)
 
 - From saved configuration file:
 
