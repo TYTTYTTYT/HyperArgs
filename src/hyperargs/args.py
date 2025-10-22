@@ -5,7 +5,7 @@ This module defines various argument types for hyperparameter management.
 '''
 
 from typing import Any, Optional, TypeVar, List, Generic, Union, Dict
-from typing_extensions import Self
+from typing_extensions import Self, Callable
 import os
 from copy import deepcopy
 
@@ -302,14 +302,21 @@ class OptionArg(Arg[str]):
     def __init__(
         self, 
         default: Optional[str], 
-        options: List[str], 
+        options: Optional[List[str]] = None, 
         allow_none: bool = False, 
-        env_bind: Optional[str] = None
+        env_bind: Optional[str] = None,
+        option_fn: Optional[Callable[..., List[str]]] = None
     ):
         self._value = default
-        self._options = options
+        if options is None:
+            assert option_fn is not None, "Options must be provided either directly or via option_fn"
+            self._options = option_fn()
+        else:
+            self._options = options
         self._allow_none = allow_none
         self._env_bind = env_bind
+        self.option_fn = option_fn
+
         if not allow_none:
             assert self._value is not None, "Default value cannot be None if allow_none is False"
         if self._value is not None:
@@ -325,6 +332,8 @@ class OptionArg(Arg[str]):
         return self._value
 
     def parse(self, value: Any) -> Self:
+        if self.option_fn is not None:
+            self._options = self.option_fn()
         if isinstance(value, str):
             if value.lower().strip() in ('none', 'null'):
                 value = None
@@ -349,9 +358,13 @@ class OptionArg(Arg[str]):
         return result
 
     def __repr__(self) -> str:
+        if self.option_fn is not None:
+            self._options = self.option_fn()
         return f"OptionArg(value={self._value}, options={self._options}, allow_none={self._allow_none})"
 
     def build_widget(self, key: str, container: DeltaGenerator) -> None:
+        if self.option_fn is not None:
+            self._options = self.option_fn()
         label = (f'`options` **{key.split(".")[-1]}** *(options: {self._options})*')
         container.selectbox(
             label=label,
