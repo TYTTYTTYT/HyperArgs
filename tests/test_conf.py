@@ -328,6 +328,81 @@ def regression_tuple_field_accepted():
     t.pair = (StrArg('x'), StrArg('y'))      # must not raise
 
 
+# --------------------------------------------------------------------------
+# ROUND 3 — monitors whose TRIGGER is a container, and monitors that CONFIGURE
+# a nested block rather than choosing its class. Both were broken by the
+# scalars-then-containers ordering; neither had a test.
+# --------------------------------------------------------------------------
+
+class Block(Conf):
+    n = IntArg(1)
+    m = IntArg(2)
+
+
+@add_dependency('mode', 'block')
+class Configures(Conf):
+    mode = OptionArg('fast', options=['fast', 'slow'])
+    block = Block()
+
+    @monitor_on('mode')
+    def tune(self) -> None:
+        if self.mode.value() == 'slow':
+            self.block.n = self.block.n.parse(200)
+
+
+@add_dependency('inner', 'outer')        # backwards, and BOTH are containers
+class ContainerTrigger(Conf):
+    outer = Block()
+    inner = Conf()
+
+    @monitor_on('outer')
+    def swap_inner(self) -> None:
+        want = Wide if self.outer.n.value() >= 5 else Conf
+        if self.inner.__class__ is not want:
+            self.inner = want()
+
+
+@add_dependency('block', 'n_items')
+class ContainerSetsScalar(Conf):
+    block = Block()
+    n_items = IntArg(0)
+
+    @monitor_on('block')
+    def sync(self) -> None:
+        self.n_items = self.n_items.parse(self.block.n.value())
+
+
+@case
+def regression_monitor_configured_nested_values_survive():
+    """A monitor that CONFIGURES a nested block (rather than choosing its
+    class) must not lose that configuration the moment the file mentions the
+    block. _parse_attr used from_dict — a classmethod — which built a fresh
+    instance and discarded everything the monitor had set."""
+    c = Configures.from_dict({'mode': 'slow', 'block': {'m': 42}})
+    assert c.block.m.value() == 42, 'file value lost'
+    assert c.block.n.value() == 200, \
+        f'monitor-set value in the nested block was discarded (n={c.block.n.value()})'
+
+
+@case
+def regression_container_triggered_monitor_rebuilding_a_container():
+    """The trigger is itself a container, so 'scalars first' gives no ordering
+    at all; the victim must still end up with the file's values."""
+    c = ContainerTrigger.from_dict({'outer': {'n': 5}, 'inner': {'paths': ['x', 'y', 'z']}})
+    assert isinstance(c.inner, Wide), type(c.inner).__name__
+    assert [p.value() for p in c.inner.paths] == ['x', 'y', 'z'], \
+        'file values for the rebuilt container were dropped'
+
+
+@case
+def regression_container_triggered_monitor_does_not_clobber_a_scalar():
+    """With the dependency declared correctly (block -> n_items), the file's
+    explicit n_items must win, exactly as it did before."""
+    c = ContainerSetsScalar.from_dict({'block': {'n': 7}, 'n_items': 99})
+    assert c.n_items.value() == 99, \
+        f'a container-triggered monitor overwrote an explicit file value ({c.n_items.value()})'
+
+
 if __name__ == '__main__':
     print('BEHAVIOUR')
     behaviour_nested_parses_when_trigger_present()
@@ -354,6 +429,9 @@ if __name__ == '__main__':
     regression_strict_with_backwards_dependency()
     regression_monitor_failure_is_not_fatal_at_construction()
     regression_tuple_field_accepted()
+    regression_monitor_configured_nested_values_survive()
+    regression_container_triggered_monitor_rebuilding_a_container()
+    regression_container_triggered_monitor_does_not_clobber_a_scalar()
     print(f'\n{len(PASSED)} passed, {len(FAILED)} failed')
     for f in FAILED:
         print(f'  - {f}')

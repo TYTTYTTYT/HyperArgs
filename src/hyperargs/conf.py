@@ -193,72 +193,72 @@ class Conf:
 
     @classmethod
     def from_dict(cls: Type[C], data: Dict[str, JSON], strict: bool = False) -> C:
-        """Create a configuration instance from a dictionary. TODO"""
-        instance = cls()
+        """Create a configuration instance from a dictionary."""
+        return cls().parse_dict(data, strict=strict)
+
+    def parse_dict(self, data: Dict[str, JSON], strict: bool = False) -> Self:
+        """Parse a dictionary into this instance.
+
+        Fields are parsed in dependency order, and then anything a monitor
+        INVALIDATED along the way is parsed again.
+
+        A monitor firing while a later field is parsed can replace an
+        attribute that has already been parsed. Two different things look like
+        that, and they want opposite outcomes:
+
+          * the monitor swapped the field for a different TYPE — an OptionArg
+            selecting which Conf subclass a nested block is. The file's values
+            went into an object that no longer exists, so they have to be
+            parsed again into the new one. This is what a dependency declared
+            in the wrong direction produces.
+          * the monitor RECOMPUTED a value of the same type — a field derived
+            from another one. Here the monitor is the authority; re-applying
+            the file would resurrect a stale value, and since ``to_dict``
+            writes derived fields back out, every saved-then-edited config
+            carries one.
+
+        Type identity (plus length, for lists) separates the two.
+        """
         data_ = copy.deepcopy(data)
+        raw = {name: copy.deepcopy(v) for name, v in data_.items()}
+        sigs: Dict[str, tuple] = {}
 
-        # Two phases, each in dependency order.
-        #
-        # Monitors are triggered by scalar fields and typically REBUILD a
-        # container field — an OptionArg choosing which Conf subclass a nested
-        # block should be, a count field resizing a list. Parsing a container
-        # before the scalars have settled means parsing it against a
-        # placeholder: the values are then thrown away when the monitor
-        # replaces the object, `strict` reports the real subclass's own fields
-        # as unexpected, and a list declared longer on the real subclass trips
-        # the length check. Declaration order cannot be relied on to avoid
-        # this — a dependency declared in the wrong direction produces exactly
-        # that ordering.
-        #
-        # So: settle every Arg first, then parse the containers against
-        # whatever the monitors built. Relative order within each phase stays
-        # topological, so configs that never hit this keep their old
-        # behaviour, including which of a derived field and a file value wins.
-        order = list(nx.topological_sort(instance._dep_graph))
-        containers = [
-            n for n in order
-            if n in data_ and isinstance(getattr(instance, n, None), (Conf, list, tuple))
-        ]
-        scalars = [n for n in order if n in data_ and n not in containers]
-
-        for name in scalars + containers:
+        for name in nx.topological_sort(self._dep_graph):
             if name in data_:
-                value = data_[name]
-                # the INSTANCE attribute, not the class one: a monitor may have
-                # swapped this attribute for another type, and the class
-                # default no longer describes what we are parsing into
-                attr = getattr(instance, name)
-
-                parsed_value = _parse_attr(value, attr, strict=strict)
-                setattr(instance, name, parsed_value)
-
+                # The INSTANCE attribute, not the class one: a monitor may
+                # already have swapped this attribute for another type, and
+                # the class default no longer describes what we parse into.
+                # Not strict yet — a field a monitor is about to rebuild is
+                # parsed here against a placeholder, and validating that
+                # intermediate state reports the real subclass's own fields as
+                # unexpected.
+                attr = getattr(self, name)
+                setattr(self, name, _parse_attr(data_[name], attr, strict=False))
+                sigs[name] = _shape_of(getattr(self, name))
                 data_.pop(name)
+
+        for _ in range(_MAX_REPAIR_ROUNDS):
+            stale = [n for n, s in sigs.items() if _shape_of(getattr(self, n)) != s]
+            if not stale:
+                break
+            for name in stale:
+                _warn_rebuilt_once(type(self), name)
+                setattr(self, name,
+                        _parse_attr(copy.deepcopy(raw[name]), getattr(self, name),
+                                    strict=False))
+                sigs[name] = _shape_of(getattr(self, name))
+
+        if strict:
+            # Every field has settled on its final type now, so re-parse each
+            # one strictly and discard the result: this reports genuine typos,
+            # and only those.
+            for name in sigs:
+                _parse_attr(copy.deepcopy(raw[name]), getattr(self, name), strict=True)
 
         if strict and data_:
             raise ValueError(f"Unexpected fields in data: {list(data_.keys())}")
         elif data_:
             logger.warning(f"Ignored unexpected fields in data: {list(data_.keys())}")
-
-        return instance
-
-    def parse_dict(self, data: Dict[str, JSON], strict: bool = False) -> Self:
-        """Create a configuration instance from a dictionary. TODO"""
-        data = copy.deepcopy(data)
-
-        for name in nx.topological_sort(self._dep_graph):
-            if name in data:
-                value = data[name]
-                attr = getattr(self, name)
-
-                parsed_value = _update_parse_attr(value, attr, strict=strict)
-                setattr(self, name, parsed_value)
-
-                data.pop(name)
-
-        if strict and data:
-            raise ValueError(f"Unexpected fields in data: {list(data.keys())}")
-        elif data:
-            logger.warning(f"Ignored unexpected fields in data: {list(data.keys())}")
 
         return self
 
@@ -532,12 +532,42 @@ def _check_list_len(value: Union[list, tuple], attr: Union[list, tuple]) -> None
         )
 
 
+_MAX_REPAIR_ROUNDS = 3
+_rebuild_warned: Set[tuple] = set()
+
+
+def _shape_of(value: Any) -> tuple:
+    """What a monitor replacing this attribute would have to change for the
+    already-parsed file values to be meaningless: its type, and for a list its
+    length. A same-type replacement is a recomputation, not an invalidation."""
+    if isinstance(value, (list, tuple)):
+        return (type(value), len(value))
+    return (type(value),)
+
+
+def _warn_rebuilt_once(cls: type, name: str) -> None:
+    key = (cls, name)
+    if key in _rebuild_warned:
+        return          # once per class+field, not once per parse
+    _rebuild_warned.add(key)
+    logger.warning(
+        f"field '{name}' of {cls.__name__} is rebuilt by a monitor after it "
+        f"has been parsed, so it has to be parsed twice. Declare '{name}' as "
+        f"the CHILD of the field whose monitor rebuilds it to avoid this."
+    )
+
+
 def _parse_attr(value: JSON, attr: Union[Arg, Conf, list], strict: bool = False) -> Union[Arg, Conf, list]:
     if isinstance(attr, Arg):
         return attr.parse(value)
     elif isinstance(attr, Conf):
         assert isinstance(value, dict), f"Expected dict for Conf attribute, got {type(value)}"
-        return attr.from_dict(value, strict=strict)
+        # Parse into a COPY of what is already there, never a fresh instance:
+        # a monitor may have configured this nested block, and from_dict (a
+        # classmethod) would discard all of it the moment the file mentioned
+        # the block. The copy is what keeps parse_dict's in-place mutation
+        # from rewriting a class default for every later instance.
+        return copy.deepcopy(attr).parse_dict(value, strict=strict)
     elif isinstance(attr, (list, tuple)):
         assert isinstance(value, (list, tuple)), f"Expected list/tuple for attribute, got {type(value)}"
         _check_list_len(value, attr)
@@ -548,25 +578,10 @@ def _parse_attr(value: JSON, attr: Union[Arg, Conf, list], strict: bool = False)
     else:
         raise TypeError(f"Unsupported attribute type: {type(attr)}")
 
-def _update_parse_attr(value: JSON, attr: Union[Arg, Conf, list], strict: bool = False) -> Union[Arg, Conf, list]:
-    if isinstance(attr, Arg):
-        return attr.parse(value)
-    elif isinstance(attr, Conf):
-        assert isinstance(value, dict), f"Expected dict for Conf attribute, got {type(value)}"
-        # parse_dict mutates in place and returns self. When `attr` is still
-        # the class default (nothing has been assigned to this field on this
-        # instance yet), parsing into it would rewrite the default for every
-        # future instance in the process — copy first.
-        return copy.deepcopy(attr).parse_dict(value, strict=strict)
-    elif isinstance(attr, (list, tuple)):
-        assert isinstance(value, (list, tuple)), f"Expected list/tuple for attribute, got {type(value)}"
-        _check_list_len(value, attr)
-        result = [_update_parse_attr(v, a, strict=strict) for v, a in zip(value, attr)]
-        if len(attr) > len(value):
-            result.extend([copy.deepcopy(a) for a in attr[len(value):]])
-        return result
-    else:
-        raise TypeError(f"Unsupported attribute type: {type(attr)}")
+
+# The two parsers converged once nested Confs started parsing into a copy of
+# the existing attribute; kept as an alias for callers outside this module.
+_update_parse_attr = _parse_attr
 
 def add_dependency(parent: str, child: str) -> Callable[[Type[C]], Type[C]]:
     """Add a dependency relationship from parent to child in the graph."""
