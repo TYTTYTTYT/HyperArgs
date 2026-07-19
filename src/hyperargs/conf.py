@@ -82,13 +82,23 @@ class Conf:
                 method = getattr(self, monitor, None)
                 if callable(method):
                     fired.add(monitor)
-                    method()
+                    try:
+                        method()
+                    except Exception as e:
+                        # a monitor that cannot run against the declared
+                        # defaults is the author's bug, but it must not make
+                        # the class unconstructible — it will run again as
+                        # soon as the field it watches is assigned
+                        logger.warning(
+                            f"monitor '{monitor}' failed while materializing "
+                            f"defaults for {type(self).__name__}: {e}"
+                        )
 
     @staticmethod
     def check_conf_type(value: Any) -> bool:
         if isinstance(value, Arg):
             return True
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):    # the parse path accepts both
             return all(Conf.check_conf_type(v) for v in value)
         if isinstance(value, Conf):
             return True
@@ -187,39 +197,42 @@ class Conf:
         instance = cls()
         data_ = copy.deepcopy(data)
 
-        parsed_ids: Dict[str, int] = {}
-        for name in nx.topological_sort(instance._dep_graph):
+        # Two phases, each in dependency order.
+        #
+        # Monitors are triggered by scalar fields and typically REBUILD a
+        # container field — an OptionArg choosing which Conf subclass a nested
+        # block should be, a count field resizing a list. Parsing a container
+        # before the scalars have settled means parsing it against a
+        # placeholder: the values are then thrown away when the monitor
+        # replaces the object, `strict` reports the real subclass's own fields
+        # as unexpected, and a list declared longer on the real subclass trips
+        # the length check. Declaration order cannot be relied on to avoid
+        # this — a dependency declared in the wrong direction produces exactly
+        # that ordering.
+        #
+        # So: settle every Arg first, then parse the containers against
+        # whatever the monitors built. Relative order within each phase stays
+        # topological, so configs that never hit this keep their old
+        # behaviour, including which of a derived field and a file value wins.
+        order = list(nx.topological_sort(instance._dep_graph))
+        containers = [
+            n for n in order
+            if n in data_ and isinstance(getattr(instance, n, None), (Conf, list, tuple))
+        ]
+        scalars = [n for n in order if n in data_ and n not in containers]
+
+        for name in scalars + containers:
             if name in data_:
                 value = data_[name]
-                # the INSTANCE attribute, not the class one: earlier fields in
-                # dependency order may have swapped this attribute for another
-                # type (an OptionArg selecting a Conf subclass), and the class
+                # the INSTANCE attribute, not the class one: a monitor may have
+                # swapped this attribute for another type, and the class
                 # default no longer describes what we are parsing into
                 attr = getattr(instance, name)
 
                 parsed_value = _parse_attr(value, attr, strict=strict)
                 setattr(instance, name, parsed_value)
-                parsed_ids[name] = id(getattr(instance, name))
 
                 data_.pop(name)
-
-        # Repair pass. A field parsed early can be REPLACED afterwards by a
-        # monitor belonging to a field parsed later — which happens whenever a
-        # dependency is declared in the wrong direction, so the topological
-        # order disagrees with the real one. The parsed values would simply be
-        # discarded. Re-parse exactly those fields, against what the monitor
-        # left behind.
-        for name, pid in parsed_ids.items():
-            if id(getattr(instance, name)) != pid:
-                logger.warning(
-                    f"field '{name}' was rebuilt by a monitor after it had been "
-                    f"parsed; re-parsing it. Check the dependency direction "
-                    f"declared for '{name}' — it should be declared as the "
-                    f"CHILD of whatever field rebuilds it."
-                )
-                setattr(instance, name,
-                        _parse_attr(copy.deepcopy(data[name]), getattr(instance, name),
-                                    strict=strict))
 
         if strict and data_:
             raise ValueError(f"Unexpected fields in data: {list(data_.keys())}")

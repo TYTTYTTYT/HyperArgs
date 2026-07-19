@@ -239,6 +239,95 @@ def defect_S10_setattr_rejects_raw_value():
     raise AssertionError('a raw value silently replaced an Arg field')
 
 
+# --------------------------------------------------------------------------
+# REGRESSIONS — found by adversarial review of the first attempt at these
+# fixes. Each one passed on 0.1.3 and broke on the first draft of 0.1.4.
+# --------------------------------------------------------------------------
+
+class Wide(Conf):
+    paths = [StrArg('a'), StrArg('b'), StrArg('c')]
+
+
+@add_dependency('conf', 'kind')          # deliberately BACKWARDS, as in the wild
+class Selector(Conf):
+    kind = OptionArg('narrow', options=['narrow', 'wide'])
+    conf = Conf()
+
+    @monitor_on('kind')
+    def swap(self) -> None:
+        want = Wide if self.kind.value() == 'wide' else Conf
+        if self.conf.__class__ is not want:
+            self.conf = want()
+
+
+@add_dependency('derived', 'source')     # also backwards, as the README's example
+class Derived(Conf):
+    source = IntArg(1)
+    derived = IntArg(2)
+
+    @monitor_on('source')
+    def recompute(self) -> None:
+        self.derived = self.derived.parse(self.source.value() * 2)
+
+
+@case
+def regression_derived_field_not_overridden_by_stale_file_value():
+    """A monitor that computes one field from another must win over whatever
+    the file carries — configs are written back out with the derived value in
+    them, so a stale copy is present in every saved config."""
+    c = Derived.from_dict({'source': 8, 'derived': 10})
+    assert c.derived.value() == 16, \
+        f'stale file value won over the monitor ({c.derived.value()})'
+
+
+@case
+def regression_nested_parsed_against_the_real_subclass():
+    """With the dependency declared backwards, the nested block must still be
+    parsed against the subclass the monitor selects — not against the
+    placeholder that happens to come first in declaration order."""
+    c = Selector.from_dict({'kind': 'wide', 'conf': {'paths': ['x', 'y', 'z']}})
+    assert isinstance(c.conf, Wide), type(c.conf).__name__
+    assert [p.value() for p in c.conf.paths] == ['x', 'y', 'z']
+
+
+@case
+def regression_strict_with_backwards_dependency():
+    """strict must not flag the real subclass's own fields as unexpected."""
+    Selector.from_dict({'kind': 'wide', 'conf': {'paths': ['x', 'y', 'z']}}, strict=True)
+
+
+@case
+def regression_monitor_failure_is_not_fatal_at_construction():
+    """Firing monitors to materialize defaults must not make a class with a
+    fragile monitor unconstructible."""
+    class Boom(Conf):
+        y = IntArg(1)
+
+        @monitor_on('y')
+        def explode(self) -> None:
+            raise RuntimeError('monitor exploded')
+
+    Boom()                       # must not raise
+    # assignment is a different matter: a monitor that fails when the field it
+    # watches actually changes is a real error and still propagates, as it did
+    # before defaults were materialized at construction
+    try:
+        Boom.from_dict({'y': 5})
+    except RuntimeError:
+        return
+    raise AssertionError('a monitor failure on assignment was swallowed')
+
+
+@case
+def regression_tuple_field_accepted():
+    """The parse path accepts tuples, so __setattr__ must too."""
+    class T(Conf):
+        pair = [StrArg('a'), StrArg('b')]
+
+    t = T()
+    t.pair = (StrArg('x'), StrArg('y'))      # must not raise
+
+
 if __name__ == '__main__':
     print('BEHAVIOUR')
     behaviour_nested_parses_when_trigger_present()
@@ -259,6 +348,12 @@ if __name__ == '__main__':
     defect_S8_nan_rejected_by_bounds()
     defect_S12_monitors_fire_once_per_parse()
     defect_S10_setattr_rejects_raw_value()
+    print('REGRESSIONS')
+    regression_derived_field_not_overridden_by_stale_file_value()
+    regression_nested_parsed_against_the_real_subclass()
+    regression_strict_with_backwards_dependency()
+    regression_monitor_failure_is_not_fatal_at_construction()
+    regression_tuple_field_accepted()
     print(f'\n{len(PASSED)} passed, {len(FAILED)} failed')
     for f in FAILED:
         print(f'  - {f}')
