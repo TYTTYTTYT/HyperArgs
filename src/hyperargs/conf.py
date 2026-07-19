@@ -58,6 +58,32 @@ class Conf:
             cls._dep_graph.add_node(name)
             setattr(cls, name, copy.deepcopy(value))
 
+    def __init__(self) -> None:
+        """Materialize monitor-derived defaults.
+
+        Monitors only run from ``__setattr__``, so a field whose value comes
+        from another field's default used to stay unresolved until that other
+        field was explicitly assigned. A config file that simply omitted a
+        field equal to its default therefore lost whatever the monitor would
+        have built — most visibly, a nested Conf swapped in by an OptionArg
+        stayed a bare ``Conf`` and every key parsed against it was discarded.
+
+        Firing each monitor once here, in dependency order, means a freshly
+        constructed Conf is already in the state the declared defaults imply.
+        Monitors are expected to be idempotent (they are re-run on every
+        assignment to the field they watch).
+        """
+        super().__init__()
+        fired: Set[str] = set()
+        for name in nx.topological_sort(self._dep_graph):
+            for monitor in self._monitors.get(name, ()):  # type: ignore[arg-type]
+                if monitor in fired:
+                    continue
+                method = getattr(self, monitor, None)
+                if callable(method):
+                    fired.add(monitor)
+                    method()
+
     @staticmethod
     def check_conf_type(value: Any) -> bool:
         if isinstance(value, Arg):
@@ -131,6 +157,16 @@ class Conf:
         return decorator
 
     def __setattr__(self, name: str, value: Any) -> None:
+        # Assigning a raw value over a declared field (forgetting `.parse()`)
+        # used to succeed and only fail much later, inside to_dict() — often
+        # after the job had already started. Reject it where it happens.
+        if not name.startswith('_') and name in self._dep_graph:
+            if not self.check_conf_type(value):
+                raise TypeError(
+                    f"field '{name}' must hold an Arg, Conf, or list of them, "
+                    f"got {value!r} ({type(value).__name__}) — did you mean "
+                    f"self.{name} = self.{name}.parse(...)?"
+                )
         super().__setattr__(name, value)
         if name in self._monitors:
             for monitor in self._monitors[name]:
@@ -139,8 +175,11 @@ class Conf:
                     if callable(method):
                         method()
 
-        if name not in self._dep_graph:
-            self._dep_graph.add_node(name)
+        # NOTE: deliberately does NOT register new nodes on the class-level
+        # dependency graph. Doing so let every attribute ever set on any
+        # instance (including private bookkeeping) leak into the graph shared
+        # by the class and its future subclasses, and a node with no matching
+        # class attribute made the next from_dict raise AttributeError.
 
     @classmethod
     def from_dict(cls: Type[C], data: Dict[str, JSON], strict: bool = False) -> C:
@@ -148,22 +187,46 @@ class Conf:
         instance = cls()
         data_ = copy.deepcopy(data)
 
+        parsed_ids: Dict[str, int] = {}
         for name in nx.topological_sort(instance._dep_graph):
             if name in data_:
                 value = data_[name]
-                attr = getattr(cls, name)
+                # the INSTANCE attribute, not the class one: earlier fields in
+                # dependency order may have swapped this attribute for another
+                # type (an OptionArg selecting a Conf subclass), and the class
+                # default no longer describes what we are parsing into
+                attr = getattr(instance, name)
 
-                parsed_value = _parse_attr(value, attr)
+                parsed_value = _parse_attr(value, attr, strict=strict)
                 setattr(instance, name, parsed_value)
+                parsed_ids[name] = id(getattr(instance, name))
 
                 data_.pop(name)
+
+        # Repair pass. A field parsed early can be REPLACED afterwards by a
+        # monitor belonging to a field parsed later — which happens whenever a
+        # dependency is declared in the wrong direction, so the topological
+        # order disagrees with the real one. The parsed values would simply be
+        # discarded. Re-parse exactly those fields, against what the monitor
+        # left behind.
+        for name, pid in parsed_ids.items():
+            if id(getattr(instance, name)) != pid:
+                logger.warning(
+                    f"field '{name}' was rebuilt by a monitor after it had been "
+                    f"parsed; re-parsing it. Check the dependency direction "
+                    f"declared for '{name}' — it should be declared as the "
+                    f"CHILD of whatever field rebuilds it."
+                )
+                setattr(instance, name,
+                        _parse_attr(copy.deepcopy(data[name]), getattr(instance, name),
+                                    strict=strict))
 
         if strict and data_:
             raise ValueError(f"Unexpected fields in data: {list(data_.keys())}")
         elif data_:
             logger.warning(f"Ignored unexpected fields in data: {list(data_.keys())}")
 
-        return instance.parse_dict(data, strict=strict)
+        return instance
 
     def parse_dict(self, data: Dict[str, JSON], strict: bool = False) -> Self:
         """Create a configuration instance from a dictionary. TODO"""
@@ -174,7 +237,7 @@ class Conf:
                 value = data[name]
                 attr = getattr(self, name)
 
-                parsed_value = _update_parse_attr(value, attr)
+                parsed_value = _update_parse_attr(value, attr, strict=strict)
                 setattr(self, name, parsed_value)
 
                 data.pop(name)
@@ -440,32 +503,52 @@ def _to_json_dict(value: Union[Arg, Conf, list]) -> JSON:
     else:
         raise TypeError(f"Unsupported type: {type(value)}")
 
-def _parse_attr(value: JSON, attr: Union[Arg, Conf, list]) -> Union[Arg, Conf, list]:
+def _check_list_len(value: Union[list, tuple], attr: Union[list, tuple]) -> None:
+    """A config list longer than the declared field is a mistake, not a hint.
+
+    ``zip`` used to drop the surplus silently, so adding a data source without
+    bumping its count field quietly changed the training mixture. The count is
+    usually itself a field (with a monitor that resizes this list), so the two
+    disagreeing means the user's intent is genuinely ambiguous.
+    """
+    if len(value) > len(attr):
+        raise ValueError(
+            f"got {len(value)} items for a field declared with {len(attr)}; "
+            f"the surplus would be silently dropped — fix the count field or "
+            f"the list"
+        )
+
+
+def _parse_attr(value: JSON, attr: Union[Arg, Conf, list], strict: bool = False) -> Union[Arg, Conf, list]:
     if isinstance(attr, Arg):
         return attr.parse(value)
     elif isinstance(attr, Conf):
         assert isinstance(value, dict), f"Expected dict for Conf attribute, got {type(value)}"
-        return attr.from_dict(value)
+        return attr.from_dict(value, strict=strict)
     elif isinstance(attr, (list, tuple)):
         assert isinstance(value, (list, tuple)), f"Expected list/tuple for attribute, got {type(value)}"
-        # assert len(value) <= len(attr), f"Length of value and attribute list must match, but got {len(value)} and {len(attr)}"
-        result = [_parse_attr(v, a) for v, a in zip(value, attr)]
+        _check_list_len(value, attr)
+        result = [_parse_attr(v, a, strict=strict) for v, a in zip(value, attr)]
         if len(attr) > len(value):
             result.extend([copy.deepcopy(a) for a in attr[len(value):]])
         return result
     else:
         raise TypeError(f"Unsupported attribute type: {type(attr)}")
 
-def _update_parse_attr(value: JSON, attr: Union[Arg, Conf, list]) -> Union[Arg, Conf, list]:
+def _update_parse_attr(value: JSON, attr: Union[Arg, Conf, list], strict: bool = False) -> Union[Arg, Conf, list]:
     if isinstance(attr, Arg):
         return attr.parse(value)
     elif isinstance(attr, Conf):
         assert isinstance(value, dict), f"Expected dict for Conf attribute, got {type(value)}"
-        return attr.parse_dict(value)
+        # parse_dict mutates in place and returns self. When `attr` is still
+        # the class default (nothing has been assigned to this field on this
+        # instance yet), parsing into it would rewrite the default for every
+        # future instance in the process — copy first.
+        return copy.deepcopy(attr).parse_dict(value, strict=strict)
     elif isinstance(attr, (list, tuple)):
         assert isinstance(value, (list, tuple)), f"Expected list/tuple for attribute, got {type(value)}"
-        # assert len(value) <= len(attr), f"Length of value and attribute list must match, but got {len(value)} and {len(attr)}"
-        result = [_update_parse_attr(v, a) for v, a in zip(value, attr)]
+        _check_list_len(value, attr)
+        result = [_update_parse_attr(v, a, strict=strict) for v, a in zip(value, attr)]
         if len(attr) > len(value):
             result.extend([copy.deepcopy(a) for a in attr[len(value):]])
         return result
