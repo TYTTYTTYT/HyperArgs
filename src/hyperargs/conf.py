@@ -383,11 +383,19 @@ class Conf:
             else:
                 instance = cls()
 
+            # Write corrections back to the widget they came from. Taking
+            # only the last path segment collapsed every nested key onto a
+            # top-level one: `optimizer.lr` landed on an unrelated `lr` (a
+            # silent wrong-field write), a nested derived field never
+            # converged and the app reran forever, and a list element's
+            # `paths.[0]` became `[0]`, which the session parser rejects and
+            # which then re-crashes on every rerun. The full path is already
+            # in the key — everything after the leading underscore.
             for k in list(st.session_state.keys()):
                 if not isinstance(k, str):
                     continue
                 if k.startswith(f'_{ST_TAG}.'):
-                    key = f"{ST_TAG}.{k.split('.')[-1]}"
+                    key = k[1:]
                     st.session_state[key] = st.session_state[k]
                     del st.session_state[k]
 
