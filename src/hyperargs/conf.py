@@ -233,7 +233,7 @@ class Conf:
                 # intermediate state reports the real subclass's own fields as
                 # unexpected.
                 attr = getattr(self, name)
-                setattr(self, name, _parse_attr(data_[name], attr, strict=False))
+                setattr(self, name, _parse_attr(data_[name], attr, strict=False, field=name))
                 sigs[name] = _shape_of(getattr(self, name))
                 data_.pop(name)
 
@@ -245,7 +245,7 @@ class Conf:
                 _warn_rebuilt_once(type(self), name)
                 setattr(self, name,
                         _parse_attr(copy.deepcopy(raw[name]), getattr(self, name),
-                                    strict=False))
+                                    strict=False, field=name))
                 sigs[name] = _shape_of(getattr(self, name))
 
         if strict:
@@ -253,7 +253,7 @@ class Conf:
             # one strictly and discard the result: this reports genuine typos,
             # and only those.
             for name in sigs:
-                _parse_attr(copy.deepcopy(raw[name]), getattr(self, name), strict=True)
+                _parse_attr(copy.deepcopy(raw[name]), getattr(self, name), strict=True, field=name)
 
         if strict and data_:
             raise ValueError(f"Unexpected fields in data: {list(data_.keys())}")
@@ -516,20 +516,39 @@ def _to_json_dict(value: Union[Arg, Conf, list]) -> JSON:
     else:
         raise TypeError(f"Unsupported type: {type(value)}")
 
-def _check_list_len(value: Union[list, tuple], attr: Union[list, tuple]) -> None:
-    """A config list longer than the declared field is a mistake, not a hint.
+def _check_list_len(value: Union[list, tuple], attr: Union[list, tuple],
+                    field: str = '') -> None:
+    """Report a config list whose length disagrees with the declared field.
 
-    ``zip`` used to drop the surplus silently, so adding a data source without
-    bumping its count field quietly changed the training mixture. The count is
-    usually itself a field (with a monitor that resizes this list), so the two
-    disagreeing means the user's intent is genuinely ambiguous.
+    The two directions are not symmetric. A list LONGER than declared loses
+    what the user wrote — ``zip`` dropped the surplus silently, so adding a
+    data source without bumping its count field quietly changed the training
+    mixture — so it raises. A SHORTER list is padded with the declared
+    defaults, which is recoverable but still worth saying out loud: with a
+    weights list whose default is 1.0, supplying 7 weights for 8 sources
+    leaves the eighth at 1.0 and hands it roughly half the mixture.
     """
+    where = f"field '{field}': " if field else ''
     if len(value) > len(attr):
         raise ValueError(
-            f"got {len(value)} items for a field declared with {len(attr)}; "
-            f"the surplus would be silently dropped — fix the count field or "
-            f"the list"
+            f"{where}got {len(value)} items for a field declared with "
+            f"{len(attr)}; the surplus would be silently dropped — fix the "
+            f"count field or the list"
         )
+    if len(value) < len(attr):
+        padded = [_summarize(a) for a in attr[len(value):]]
+        logger.warning(
+            f"{where}got {len(value)} items for a field declared with "
+            f"{len(attr)}; the remaining {len(attr) - len(value)} keep their "
+            f"defaults ({', '.join(padded)})"
+        )
+
+
+def _summarize(attr: Any) -> str:
+    try:
+        return repr(attr.value())
+    except Exception:
+        return type(attr).__name__
 
 
 _MAX_REPAIR_ROUNDS = 3
@@ -557,7 +576,8 @@ def _warn_rebuilt_once(cls: type, name: str) -> None:
     )
 
 
-def _parse_attr(value: JSON, attr: Union[Arg, Conf, list], strict: bool = False) -> Union[Arg, Conf, list]:
+def _parse_attr(value: JSON, attr: Union[Arg, Conf, list], strict: bool = False,
+                field: str = '') -> Union[Arg, Conf, list]:
     if isinstance(attr, Arg):
         return attr.parse(value)
     elif isinstance(attr, Conf):
@@ -570,8 +590,8 @@ def _parse_attr(value: JSON, attr: Union[Arg, Conf, list], strict: bool = False)
         return copy.deepcopy(attr).parse_dict(value, strict=strict)
     elif isinstance(attr, (list, tuple)):
         assert isinstance(value, (list, tuple)), f"Expected list/tuple for attribute, got {type(value)}"
-        _check_list_len(value, attr)
-        result = [_parse_attr(v, a, strict=strict) for v, a in zip(value, attr)]
+        _check_list_len(value, attr, field)
+        result = [_parse_attr(v, a, strict=strict, field=field) for v, a in zip(value, attr)]
         if len(attr) > len(value):
             result.extend([copy.deepcopy(a) for a in attr[len(value):]])
         return result
