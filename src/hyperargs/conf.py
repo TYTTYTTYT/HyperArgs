@@ -237,6 +237,7 @@ class Conf:
                 sigs[name] = _shape_of(getattr(self, name))
                 data_.pop(name)
 
+        stale: List[str] = []
         for _ in range(_MAX_REPAIR_ROUNDS):
             stale = [n for n, s in sigs.items() if _shape_of(getattr(self, n)) != s]
             if not stale:
@@ -247,13 +248,28 @@ class Conf:
                         _parse_attr(copy.deepcopy(raw[name]), getattr(self, name),
                                     strict=False, field=name))
                 sigs[name] = _shape_of(getattr(self, name))
+        else:
+            # never leave silently: fields still being rebuilt after this many
+            # rounds are holding values parsed against an object that no
+            # longer exists
+            if [n for n, s in sigs.items() if _shape_of(getattr(self, n)) != s]:
+                raise RuntimeError(
+                    f"{type(self).__name__}: fields {sorted(stale)} are still "
+                    f"being rebuilt by monitors after {_MAX_REPAIR_ROUNDS} "
+                    f"passes; the declared dependencies do not describe the "
+                    f"real ones"
+                )
 
         if strict:
-            # Every field has settled on its final type now, so re-parse each
-            # one strictly and discard the result: this reports genuine typos,
-            # and only those.
+            # Strict mode is about unknown FIELDS, not about values — values
+            # were already validated as they were parsed. Re-parsing them here
+            # would reject input that is legal for the object the monitors
+            # eventually built but not for the one it was first parsed into
+            # (a monitor that tightens a bound), so strict=True would refuse a
+            # config that strict=False accepts and gets right. It would also
+            # re-fire nested monitors for a result we throw away.
             for name in sigs:
-                _parse_attr(copy.deepcopy(raw[name]), getattr(self, name), strict=True, field=name)
+                _check_unknown_keys(raw[name], getattr(self, name), name)
 
         if strict and data_:
             raise ValueError(f"Unexpected fields in data: {list(data_.keys())}")
@@ -556,11 +572,28 @@ _rebuild_warned: Set[tuple] = set()
 
 
 def _shape_of(value: Any) -> tuple:
-    """What a monitor replacing this attribute would have to change for the
-    already-parsed file values to be meaningless: its type, and for a list its
-    length. A same-type replacement is a recomputation, not an invalidation."""
+    """A signature that changes exactly when already-parsed file values stop
+    being meaningful.
+
+    For an ``Arg`` that is its type: an Arg of the same type holding a new
+    number is a monitor RECOMPUTING a derived value, and the monitor is the
+    authority there.
+
+    For a ``Conf`` it is the object's identity, not just its class. A monitor
+    that hands back a fresh instance — swapping a subclass, or resetting the
+    block — put the user's parsed values in an object nobody holds any more,
+    and that is true whether or not the class changed. (A monitor that edits
+    the nested block in place keeps the identity, so its edits and the file's
+    values merge as they should.)
+
+    For a list, its length and the classes of its elements: a monitor that
+    swaps every element for a different source type keeps type and length
+    identical while making every parsed element meaningless.
+    """
     if isinstance(value, (list, tuple)):
-        return (type(value), len(value))
+        return (type(value), len(value), tuple(_shape_of(v) for v in value))
+    if isinstance(value, Conf):
+        return (type(value), id(value))
     return (type(value),)
 
 
@@ -574,6 +607,20 @@ def _warn_rebuilt_once(cls: type, name: str) -> None:
         f"has been parsed, so it has to be parsed twice. Declare '{name}' as "
         f"the CHILD of the field whose monitor rebuilds it to avoid this."
     )
+
+
+def _check_unknown_keys(value: JSON, attr: Any, path: str) -> None:
+    """Recursively report keys the settled objects have no field for."""
+    if isinstance(attr, Conf) and isinstance(value, dict):
+        known = set(attr.field_names())
+        unknown = [k for k in value if k not in known]
+        if unknown:
+            raise ValueError(f"Unexpected fields in data at '{path}': {unknown}")
+        for k, v in value.items():
+            _check_unknown_keys(v, getattr(attr, k), f'{path}.{k}')
+    elif isinstance(attr, (list, tuple)) and isinstance(value, (list, tuple)):
+        for i, (v, a) in enumerate(zip(value, attr)):
+            _check_unknown_keys(v, a, f'{path}[{i}]')
 
 
 def _parse_attr(value: JSON, attr: Union[Arg, Conf, list], strict: bool = False,
