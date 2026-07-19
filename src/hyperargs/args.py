@@ -7,6 +7,7 @@ This module defines various argument types for hyperparameter management.
 from typing import Any, Optional, TypeVar, List, Generic, Union, Dict
 from typing_extensions import Self, Callable
 import os
+import math
 from copy import deepcopy
 
 from streamlit.delta_generator import DeltaGenerator
@@ -80,7 +81,10 @@ class IntArg(Arg[int]):
         return self._value
 
     def parse(self, value: Any) -> Self:
-        if isinstance(value, str):
+        if isinstance(value, str) and self._allow_none:
+            # only a field that CAN be null may spell null as a string; for the
+            # rest, "none" is an ordinary value (a path, a run name, an option
+            # literally called none) and coercing it destroyed round-trips
             if value.lower().strip() in ('none', 'null'):
                 value = None
         if value is None:
@@ -91,10 +95,15 @@ class IntArg(Arg[int]):
                 result._value = value
                 return result
 
+        if isinstance(value, bool):
+            raise ValueError(f"Expected an int, got the bool {value!r}")
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"{value} is not an integer; truncating it would "
+                             f"silently change the configured value")
         try:
             value = int(value)
-        except ValueError:
-            raise ValueError(f"Cannot convert {value} to int")
+        except (ValueError, TypeError):
+            raise ValueError(f"Cannot convert {value!r} to int")
 
         if self._min_value is not None and value < self._min_value:
             raise ValueError(f"Value {value} is less than minimum {self._min_value}")
@@ -156,7 +165,10 @@ class FloatArg(Arg[float]):
         return self._value
 
     def parse(self, value: Any) -> Self:
-        if isinstance(value, str):
+        if isinstance(value, str) and self._allow_none:
+            # only a field that CAN be null may spell null as a string; for the
+            # rest, "none" is an ordinary value (a path, a run name, an option
+            # literally called none) and coercing it destroyed round-trips
             if value.lower().strip() in ('none', 'null'):
                 value = None
         if value is None:
@@ -167,10 +179,16 @@ class FloatArg(Arg[float]):
                 result._value = value
                 return result
 
+        if isinstance(value, bool):
+            raise ValueError(f"Expected a float, got the bool {value!r}")
         try:
             value = float(value)
-        except ValueError:
-            raise ValueError(f"Cannot convert {value} to float")
+        except (ValueError, TypeError):
+            raise ValueError(f"Cannot convert {value!r} to float")
+        if math.isnan(value):
+            # every comparison against NaN is False, so it would sail through
+            # the min/max checks below and poison the run instead
+            raise ValueError("NaN is not a valid value")
 
         if self._min_value is not None and value < self._min_value:
             raise ValueError(f"Value {value} is less than minimum {self._min_value}")
@@ -216,7 +234,10 @@ class StrArg(Arg[str]):
         return self._value
 
     def parse(self, value: Any) -> Self:
-        if isinstance(value, str):
+        if isinstance(value, str) and self._allow_none:
+            # only a field that CAN be null may spell null as a string; for the
+            # rest, "none" is an ordinary value (a path, a run name, an option
+            # literally called none) and coercing it destroyed round-trips
             if value.lower().strip() in ('none', 'null'):
                 value = None
         if value is None:
@@ -250,6 +271,7 @@ class BoolArg(Arg[bool]):
     def __init__(self, default: bool, env_bind: Optional[str] = None):
         self._value = default
         self._env_bind = env_bind
+        self._allow_none = False        # inherited __repr__ reads this
 
         if self._env_bind is not None:
             env_value = os.getenv(self._env_bind)
@@ -267,17 +289,17 @@ class BoolArg(Arg[bool]):
             raise ValueError("Value cannot be None")
 
         if isinstance(value, str):
-            if value.lower() in ('true', '1', 'yes'):
+            text = value.lower().strip()
+            if text in ('true', '1', 'yes', 'on'):
                 value = True
-            elif value.lower() in ('false', '0', 'no'):
+            elif text in ('false', '0', 'no', 'off'):
                 value = False
             else:
-                raise ValueError(f"Cannot convert {value} to bool")
-
-        try:
-            value = bool(value)
-        except ValueError:
-            raise ValueError(f"Cannot convert {value} to bool")
+                raise ValueError(f"Cannot convert {value!r} to bool")
+        elif not isinstance(value, bool):
+            # `bool(value)` used to accept anything: 2, 3.7, [0] all became
+            # True, so a value typed into the wrong field passed silently
+            raise ValueError(f"Expected a bool, got {value!r} ({type(value).__name__})")
 
         result = deepcopy(self)
         assert isinstance(value, bool)
@@ -334,9 +356,12 @@ class OptionArg(Arg[str]):
     def parse(self, value: Any) -> Self:
         if self.option_fn is not None:
             self._options = self.option_fn()
-        if isinstance(value, str):
-            if value.lower().strip() in ('none', 'null'):
-                value = None
+        # a declared option always wins over the null spelling: an option
+        # literally named "none" used to be unselectable
+        if (isinstance(value, str) and self._allow_none
+                and value not in self._options
+                and value.lower().strip() in ('none', 'null')):
+            value = None
         if value is None:
             if not self._allow_none:
                 raise ValueError("Value cannot be None")
