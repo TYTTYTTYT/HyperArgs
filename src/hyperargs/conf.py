@@ -239,7 +239,8 @@ class Conf:
 
         stale: List[str] = []
         for _ in range(_MAX_REPAIR_ROUNDS):
-            stale = [n for n, s in sigs.items() if _shape_of(getattr(self, n)) != s]
+            stale = [n for n, s in sigs.items()
+                     if _shape_changed(s, _shape_of(getattr(self, n)))]
             if not stale:
                 break
             for name in stale:
@@ -252,12 +253,14 @@ class Conf:
             # never leave silently: fields still being rebuilt after this many
             # rounds are holding values parsed against an object that no
             # longer exists
-            if [n for n, s in sigs.items() if _shape_of(getattr(self, n)) != s]:
+            unsettled = [n for n, s in sigs.items()
+                         if _shape_changed(s, _shape_of(getattr(self, n)))]
+            if unsettled:
                 raise RuntimeError(
-                    f"{type(self).__name__}: fields {sorted(stale)} are still "
-                    f"being rebuilt by monitors after {_MAX_REPAIR_ROUNDS} "
-                    f"passes; the declared dependencies do not describe the "
-                    f"real ones"
+                    f"{type(self).__name__}: fields {sorted(unsettled)} are "
+                    f"still being rebuilt by monitors after "
+                    f"{_MAX_REPAIR_ROUNDS} passes; the declared dependencies "
+                    f"do not describe the real ones"
                 )
 
         if strict:
@@ -579,22 +582,47 @@ def _shape_of(value: Any) -> tuple:
     number is a monitor RECOMPUTING a derived value, and the monitor is the
     authority there.
 
-    For a ``Conf`` it is the object's identity, not just its class. A monitor
-    that hands back a fresh instance — swapping a subclass, or resetting the
-    block — put the user's parsed values in an object nobody holds any more,
-    and that is true whether or not the class changed. (A monitor that edits
-    the nested block in place keeps the identity, so its edits and the file's
-    values merge as they should.)
+    For a ``Conf`` it is the object ITSELF, not just its class and not its
+    id(). A monitor that hands back a fresh instance — swapping a subclass, or
+    resetting the block — put the user's parsed values in an object nobody
+    holds any more, and that is true whether or not the class changed. (A
+    monitor that edits the nested block in place keeps the same object, so its
+    edits and the file's values merge as they should.)
 
-    For a list, its length and the classes of its elements: a monitor that
+    The object is kept rather than its address because CPython recycles
+    addresses: a monitor that assigns the field twice frees the original on
+    the first assignment, and the second allocation lands on the freed
+    address — an id() signature then compares equal to the one taken before
+    the monitor ran, and the repair is skipped. Holding the reference makes
+    that impossible.
+
+    For a list, its length and the signatures of its elements: a monitor that
     swaps every element for a different source type keeps type and length
     identical while making every parsed element meaningless.
     """
     if isinstance(value, (list, tuple)):
         return (type(value), len(value), tuple(_shape_of(v) for v in value))
     if isinstance(value, Conf):
-        return (type(value), id(value))
+        return (type(value), value)
     return (type(value),)
+
+
+def _shape_changed(old: tuple, new: tuple) -> bool:
+    """Compare two signatures. Conf slots compare by identity explicitly, so a
+    subclass that defines __eq__ cannot make a replaced object look unchanged.
+    """
+    if len(old) != len(new):
+        return True
+    for a, b in zip(old, new):
+        if isinstance(a, Conf) or isinstance(b, Conf):
+            if a is not b:
+                return True
+        elif isinstance(a, tuple) and isinstance(b, tuple):
+            if _shape_changed(a, b):
+                return True
+        elif a is not b and a != b:
+            return True
+    return False
 
 
 def _warn_rebuilt_once(cls: type, name: str) -> None:
